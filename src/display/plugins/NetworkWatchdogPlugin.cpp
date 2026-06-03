@@ -11,7 +11,6 @@ static constexpr char LOG_TAG[] = "NetWatchdog";
 void NetworkWatchdogPlugin::setup(Controller *c, PluginManager *pluginManager) {
     this->controller = c;
     pluginManager->on("controller:wifi:connect", [this](Event const &) {
-        _probe.stop();
         _probe.begin(0);
         _socketReady = true;
         const unsigned long now = millis();
