@@ -910,62 +910,99 @@ export function Settings() {
           {/* Sunrise Settings */}
           {ledControl.value && (
             <Card sm={10} lg={5} title='Alba Settings'>
-              <div className='mb-4 text-sm opacity-70'>
-                Set the colors for the LEDs when in idle mode with no warnings.
-              </div>
-              <div className='mb-4 grid grid-cols-2 gap-4'>
-                <SettingsFormField label='Red (0 - 255)' htmlFor='sunriseR'>
-                  <input
-                    id='sunriseR'
-                    name='sunriseR'
-                    type='number'
-                    className='input input-bordered w-full'
-                    placeholder='16'
-                    value={formData.sunriseR}
-                    onChange={onChange('sunriseR')}
-                  />
-                </SettingsFormField>
-                <SettingsFormField label='Green (0 - 255)' htmlFor='sunriseG'>
-                  <input
-                    id='sunriseG'
-                    name='sunriseG'
-                    type='number'
-                    className='input input-bordered w-full'
-                    placeholder='16'
-                    value={formData.sunriseG}
-                    onChange={onChange('sunriseG')}
-                  />
-                </SettingsFormField>
-                <SettingsFormField label='Blue (0 - 255)' htmlFor='sunriseB'>
-                  <input
-                    id='sunriseB'
-                    name='sunriseB'
-                    type='number'
-                    className='input input-bordered w-full'
-                    placeholder='16'
-                    value={formData.sunriseB}
-                    onChange={onChange('sunriseB')}
-                  />
-                </SettingsFormField>
-                <SettingsFormField label='White (0 - 255)' htmlFor='sunriseW'>
-                  <input
-                    id='sunriseW'
-                    name='sunriseW'
-                    type='number'
-                    className='input input-bordered w-full'
-                    placeholder='16'
-                    value={formData.sunriseW}
-                    onChange={onChange('sunriseW')}
-                  />
-                </SettingsFormField>
-              </div>
-              <SettingsFormField label='External LED (0 - 255)' htmlFor='sunriseExtBrightness'>
+              <SettingsFormField label='Idle Color' htmlFor='sunriseIdle'>
+                <label
+                  className='input input-bordered w-full cursor-pointer p-1'
+                  htmlFor='sunriseIdle'
+                >
+                  <div
+                    className='h-full w-full rounded-sm'
+                    style={{ backgroundColor: formData.sunriseIdle || '#00ffff' }}
+                  >
+                    <input
+                      id='sunriseIdle'
+                      name='sunriseIdle'
+                      type='color'
+                      className='input input-bordered invisible w-full'
+                      value={formData.sunriseIdle || '#0000ff'}
+                      onChange={onChange('sunriseIdle')}
+                    />
+                  </div>
+                </label>
+              </SettingsFormField>
+              <SettingsFormField label='Brew Color' htmlFor='sunriseActive'>
+                <label
+                  className='input input-bordered w-full cursor-pointer p-1'
+                  htmlFor='sunriseActive'
+                >
+                  <div
+                    className='h-full w-full rounded-sm'
+                    style={{ backgroundColor: formData.sunriseActive || '#0000ff' }}
+                  >
+                    <input
+                      id='sunriseActive'
+                      name='sunriseActive'
+                      type='color'
+                      className='input input-bordered invisible w-full'
+                      value={formData.sunriseActive || '#0000ff'}
+                      onChange={onChange('sunriseActive')}
+                    />
+                  </div>
+                </label>
+              </SettingsFormField>
+              <SettingsFormField label='Finished Color' htmlFor='sunriseSuccess'>
+                <label
+                  className='input input-bordered w-full cursor-pointer p-1'
+                  htmlFor='sunriseSuccess'
+                >
+                  <div
+                    className='h-full w-full rounded-sm'
+                    style={{ backgroundColor: formData.sunriseSuccess || '#00ff00' }}
+                  >
+                    <input
+                      id='sunriseSuccess'
+                      name='sunriseSuccess'
+                      type='color'
+                      className='input input-bordered invisible w-full'
+                      value={formData.sunriseSuccess || '#00ff00'}
+                      onChange={onChange('sunriseSuccess')}
+                    />
+                  </div>
+                </label>
+              </SettingsFormField>
+              <SettingsFormField label='Error Color' htmlFor='sunriseError'>
+                <label
+                  className='input input-bordered w-full cursor-pointer p-1'
+                  htmlFor='sunriseError'
+                >
+                  <div
+                    className='h-full w-full rounded-sm'
+                    style={{ backgroundColor: formData.sunriseError || '#ff0000' }}
+                  >
+                    <input
+                      id='sunriseError'
+                      name='sunriseError'
+                      type='color'
+                      className='input input-bordered invisible w-full'
+                      value={formData.sunriseError || '#ff0000'}
+                      onChange={onChange('sunriseError')}
+                    />
+                  </div>
+                </label>
+              </SettingsFormField>
+              <SettingsFormField
+                label={`External LED (${((formData.sunriseExtBrightness / 255) * 100).toFixed(0)}%)`}
+                htmlFor='sunriseExtBrightness'
+              >
                 <input
                   id='sunriseExtBrightness'
                   name='sunriseExtBrightness'
-                  type='number'
-                  className='input input-bordered w-full'
+                  type='range'
+                  className='range w-full'
                   placeholder='16'
+                  min={0}
+                  max={255}
+                  step={1}
                   value={formData.sunriseExtBrightness}
                   onChange={onChange('sunriseExtBrightness')}
                 />

@@ -588,14 +588,14 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setSteamPumpCutoff(request->arg("steamPumpCutoff").toFloat());
             if (request->hasArg("themeMode"))
                 settings->setThemeMode(request->arg("themeMode").toInt());
-            if (request->hasArg("sunriseR"))
-                settings->setSunriseR(request->arg("sunriseR").toInt());
-            if (request->hasArg("sunriseG"))
-                settings->setSunriseG(request->arg("sunriseG").toInt());
-            if (request->hasArg("sunriseB"))
-                settings->setSunriseB(request->arg("sunriseB").toInt());
-            if (request->hasArg("sunriseW"))
-                settings->setSunriseW(request->arg("sunriseW").toInt());
+            if (request->hasArg("sunriseIdle"))
+                settings->setSunriseIdle(request->arg("sunriseIdle"));
+            if (request->hasArg("sunriseActive"))
+                settings->setSunriseActive(request->arg("sunriseActive"));
+            if (request->hasArg("sunriseFinished"))
+                settings->setSunriseFinished(request->arg("sunriseFinished"));
+            if (request->hasArg("sunriseError"))
+                settings->setSunriseError(request->arg("sunriseError"));
             if (request->hasArg("sunriseExtBrightness"))
                 settings->setSunriseExtBrightness(request->arg("sunriseExtBrightness").toInt());
             if (request->hasArg("emptyTankDistance"))
@@ -696,10 +696,10 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["steamPumpPercentage"] = settings.getSteamPumpPercentage();
     doc["steamPumpCutoff"] = settings.getSteamPumpCutoff();
     doc["themeMode"] = settings.getThemeMode();
-    doc["sunriseR"] = settings.getSunriseR();
-    doc["sunriseG"] = settings.getSunriseG();
-    doc["sunriseB"] = settings.getSunriseB();
-    doc["sunriseW"] = settings.getSunriseW();
+    doc["sunriseIdle"] = settings.getSunriseIdle();
+    doc["sunriseActive"] = settings.getSunriseActive();
+    doc["sunriseFinished"] = settings.getSunriseFinished();
+    doc["sunriseError"] = settings.getSunriseError();
     doc["sunriseExtBrightness"] = settings.getSunriseExtBrightness();
     doc["emptyTankDistance"] = settings.getEmptyTankDistance();
     doc["fullTankDistance"] = settings.getFullTankDistance();
