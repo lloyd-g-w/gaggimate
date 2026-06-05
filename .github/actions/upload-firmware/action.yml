@@ -39,6 +39,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        if [[ -z "${UPDATE_SERVER_HOST:-}" || -z "${UPDATE_SERVER_API_KEY:-}" ]]; then
+          echo "Skipping firmware update-server upload because UPDATE_SERVER_HOST or UPDATE_SERVER_API_KEY is not configured."
+          exit 0
+        fi
         
         FORM_ARGS=(
           -F "channel=${{ inputs.channel }}"
@@ -47,7 +52,7 @@ runs:
         
         version=${{ inputs.version }}
         if [[ -z "${{ inputs.version }}" ]]; then
-          version=$(git describe --tags --dirty)
+          version=$(git describe --tags --dirty --exclude nightly || echo "v0.0.${GITHUB_RUN_NUMBER:-0}")
         fi
         FORM_ARGS+=( -F "version=${version}" )
 
