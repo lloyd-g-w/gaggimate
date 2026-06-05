@@ -16,23 +16,23 @@ jobs:
     continue-on-error: true
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v5
       with:
         fetch-tags: true
         fetch-depth: 0
         submodules: 'recursive'
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: |
           ~/.cache/pip
           ~/.platformio/.cache
         key: ${{ runner.os }}-pio
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - name: Install PlatformIO Core
       run: pip install --upgrade platformio
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: 22
         cache: 'npm'
@@ -40,7 +40,7 @@ jobs:
     - name: Add version
       run: |
         mkdir -p out
-        git tag -d nightly
+        git tag -d nightly || true
         git describe --tags --dirty > out/version.txt
     - name: Build Web
       run: ./scripts/build_spiffs.sh
