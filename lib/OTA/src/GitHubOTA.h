@@ -2,6 +2,7 @@
 #define ESP_GITHUB_OTA_H
 
 #include "ControllerOTA.h"
+#include <FS.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
 
@@ -32,6 +33,7 @@ class GitHubOTA {
     void update(bool controller = true, bool display = true);
     void setReleaseUrl(const String &release_url);
     void setControllerVersion(const String &controller_version);
+    void setControllerUpdateFS(FS *fs);
 
   private:
     HTTPUpdate Updater;

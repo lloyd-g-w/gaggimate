@@ -18,15 +18,30 @@ void ControllerOTA::init(NimBLEClient *client, const ctr_progress_callback_t &pr
     }
 }
 
+void ControllerOTA::setUpdateFS(FS *fs) { updateFS = fs; }
+
+FS &ControllerOTA::getUpdateFS() const {
+    if (updateFS != nullptr) {
+        return *updateFS;
+    }
+    return LittleFS;
+}
+
 void ControllerOTA::update(WiFiClientSecure &wifi_client, const String &release_url) {
-    if (LittleFS.exists("/board-firmware.bin")) {
+    FS &fs = getUpdateFS();
+    if (fs.exists(UPDATE_PATH)) {
         ESP_LOGI("ControllerOTA", "Removing previous update file");
-        LittleFS.remove("/board-firmware.bin");
+        fs.remove(UPDATE_PATH);
     }
     if (!downloadFile(wifi_client, release_url)) {
         ESP_LOGE("ControllerOTA", "Download of firmware file failed");
+        return;
     }
-    File file = LittleFS.open("/board-firmware.bin", FILE_READ);
+    File file = fs.open(UPDATE_PATH, FILE_READ);
+    if (!file) {
+        ESP_LOGE("ControllerOTA", "Failed to open firmware file for update");
+        return;
+    }
     runUpdate(file, file.size());
     file.close();
 }
@@ -68,7 +83,12 @@ bool ControllerOTA::downloadFile(WiFiClientSecure &wifi_client, const String &re
         return false;
     }
 
-    File file = LittleFS.open("/board-firmware.bin", FILE_WRITE, true);
+    File file = getUpdateFS().open(UPDATE_PATH, FILE_WRITE, true);
+    if (!file) {
+        ESP_LOGE("ControllerOTA", "Failed to open %s for writing", UPDATE_PATH);
+        http.end();
+        return false;
+    }
 
     int written = 0;
     while (written < len) {
@@ -80,7 +100,7 @@ bool ControllerOTA::downloadFile(WiFiClientSecure &wifi_client, const String &re
         double progress = (static_cast<double>(written) / static_cast<double>(len)) * 50.0;
         progressCallback(static_cast<int>(progress));
     }
-    ESP_LOGI("ControllerOTA", "Downloaded firmware file with %d bytes to /board-firmware.bin", len);
+    ESP_LOGI("ControllerOTA", "Downloaded firmware file with %d bytes to %s", len, UPDATE_PATH);
     file.close();
     http.end();
     return true;

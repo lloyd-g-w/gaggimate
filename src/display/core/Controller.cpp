@@ -4,6 +4,10 @@
 #include "esp_sntp.h"
 #include <LittleFS.h>
 #include <SD_MMC.h>
+#ifdef GAGGIMATE_HEADLESS_SD_SPI
+#include <SD.h>
+#include <SPI.h>
+#endif
 #include <cmath>
 #include <ctime>
 #include <display/config.h>
@@ -34,8 +38,25 @@
 
 const String LOG_TAG = F("Controller");
 
+#ifndef GAGGIMATE_HEADLESS_SD_SPI_SCK
+#define GAGGIMATE_HEADLESS_SD_SPI_SCK 12
+#endif
+#ifndef GAGGIMATE_HEADLESS_SD_SPI_MISO
+#define GAGGIMATE_HEADLESS_SD_SPI_MISO 13
+#endif
+#ifndef GAGGIMATE_HEADLESS_SD_SPI_MOSI
+#define GAGGIMATE_HEADLESS_SD_SPI_MOSI 11
+#endif
+#ifndef GAGGIMATE_HEADLESS_SD_SPI_CS
+#define GAGGIMATE_HEADLESS_SD_SPI_CS 10
+#endif
+#ifndef GAGGIMATE_HEADLESS_SD_SPI_FREQ
+#define GAGGIMATE_HEADLESS_SD_SPI_FREQ 20000000
+#endif
+
 void Controller::setup() {
     mode = settings.getStartupMode();
+    storageFs = &LittleFS;
 
     // Web assets are served from this partition. LittleFS (not SPIFFS): SPIFFS
     // has no directory tree, so stat()/exists() is O(whole filesystem) and a
@@ -54,17 +75,9 @@ void Controller::setup() {
     pluginManager = new PluginManager();
 #ifndef GAGGIMATE_HEADLESS
     ui = new DefaultUI(this, driver, pluginManager);
-    if (driver->supportsSDCard() && driver->installSDCard()) {
-        sdcard = true;
-        ESP_LOGI(LOG_TAG, "SD Card detected and mounted");
-        ESP_LOGI(LOG_TAG, "Used: %lluMB, Capacity: %lluMB", SD_MMC.usedBytes() / 1024 / 1024, SD_MMC.cardSize() / 1024 / 1024);
-    }
 #endif
-    FS *fs = &LittleFS;
-    if (sdcard) {
-        fs = &SD_MMC;
-    }
-    profileManager = new ProfileManager(fs, "/p", settings, pluginManager);
+    setupStorage();
+    profileManager = new ProfileManager(storageFs, "/p", settings, pluginManager);
     profileManager->setup();
     if (settings.isHomekit())
         pluginManager->registerPlugin(new HomekitPlugin(settings.getWifiSsid(), settings.getWifiPassword()));
@@ -142,6 +155,52 @@ void Controller::setupPanel() {
     driver->init();
 }
 #endif
+
+void Controller::setupStorage() {
+#ifndef GAGGIMATE_HEADLESS
+    if (driver->supportsSDCard() && driver->installSDCard()) {
+        sdcard = true;
+        storageFs = &SD_MMC;
+        ESP_LOGI(LOG_TAG, "SD Card detected and mounted");
+        ESP_LOGI(LOG_TAG, "Used: %lluMB, Capacity: %lluMB", getStorageUsedBytes() / 1024 / 1024,
+                 getStorageTotalBytes() / 1024 / 1024);
+    }
+#elif defined(GAGGIMATE_HEADLESS_SD_SPI)
+    SPI.begin(GAGGIMATE_HEADLESS_SD_SPI_SCK, GAGGIMATE_HEADLESS_SD_SPI_MISO, GAGGIMATE_HEADLESS_SD_SPI_MOSI,
+              GAGGIMATE_HEADLESS_SD_SPI_CS);
+    if (SD.begin(GAGGIMATE_HEADLESS_SD_SPI_CS, SPI, GAGGIMATE_HEADLESS_SD_SPI_FREQ, "/sdcard", 10)) {
+        sdcard = true;
+        storageFs = &SD;
+        ESP_LOGI(LOG_TAG, "SPI SD Card detected and mounted");
+        ESP_LOGI(LOG_TAG, "Used: %lluMB, Capacity: %lluMB", getStorageUsedBytes() / 1024 / 1024,
+                 getStorageTotalBytes() / 1024 / 1024);
+    } else {
+        ESP_LOGW(LOG_TAG, "No SPI SD card detected");
+    }
+#endif
+}
+
+uint64_t Controller::getStorageTotalBytes() const {
+    if (!sdcard) {
+        return LittleFS.totalBytes();
+    }
+#ifdef GAGGIMATE_HEADLESS_SD_SPI
+    return SD.totalBytes();
+#else
+    return SD_MMC.cardSize();
+#endif
+}
+
+uint64_t Controller::getStorageUsedBytes() const {
+    if (!sdcard) {
+        return LittleFS.usedBytes();
+    }
+#ifdef GAGGIMATE_HEADLESS_SD_SPI
+    return SD.usedBytes();
+#else
+    return SD_MMC.usedBytes();
+#endif
+}
 
 // Parse a comma-separated float string ("a,b,c,d") into `out`. Missing fields
 // are left at `def` -- used so pump-model coeffs can carry NaN to signal

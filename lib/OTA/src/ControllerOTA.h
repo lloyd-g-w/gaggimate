@@ -2,6 +2,7 @@
 #define CONTROLLEROTA_H
 
 #include <Arduino.h>
+#include <FS.h>
 #include <NimBLEDevice.h>
 #include <WiFiClientSecure.h>
 
@@ -20,9 +21,11 @@ class ControllerOTA {
     ~ControllerOTA() = default;
     void init(NimBLEClient *client, const ctr_progress_callback_t &progress_callback);
 
+    void setUpdateFS(FS *fs);
     void update(WiFiClientSecure &wifi_client, const String &release_url);
 
   private:
+    FS &getUpdateFS() const;
     bool downloadFile(WiFiClientSecure &wifi_client, const String &release_url);
     void runUpdate(Stream &in, uint32_t size);
     void sendPart(Stream &in, uint32_t totalSize) const;
@@ -36,11 +39,14 @@ class ControllerOTA {
     NimBLERemoteCharacteristic *rxChar = nullptr;
 
     ctr_progress_callback_t progressCallback = nullptr;
+    FS *updateFS = nullptr;
 
     bool interrupted = false;
     uint8_t lastSignal = 0x00;
     uint32_t currentPart = 0;
     uint32_t fileParts = 0;
+
+    static constexpr const char *UPDATE_PATH = "/board-firmware.bin";
 };
 
 #endif // CONTROLLEROTA_H

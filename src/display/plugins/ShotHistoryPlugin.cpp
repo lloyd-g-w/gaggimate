@@ -1,7 +1,6 @@
 #include "ShotHistoryPlugin.h"
 
 #include <LittleFS.h>
-#include <SD_MMC.h>
 #include <cmath>
 #include <display/core/Controller.h>
 #include <display/core/ProfileManager.h>
@@ -74,7 +73,7 @@ void ShotHistoryPlugin::setup(Controller *c, PluginManager *pm) {
     controller = c;
     pluginManager = pm;
     if (controller->isSDCard()) {
-        fs = &SD_MMC;
+        fs = controller->getStorageFS();
         ESP_LOGI("ShotHistoryPlugin", "Logging shot history to SD card");
     }
     pm->on("controller:brew:start", [this](Event const &) { startRecording(); });
@@ -423,8 +422,8 @@ void ShotHistoryPlugin::cleanupHistory() {
 
 size_t ShotHistoryPlugin::getFreeSpace() {
     if (controller->isSDCard()) {
-        uint64_t total = SD_MMC.totalBytes();
-        uint64_t used = SD_MMC.usedBytes();
+        uint64_t total = controller->getStorageTotalBytes();
+        uint64_t used = controller->getStorageUsedBytes();
         uint64_t free = total > used ? (total - used) : 0;
         // Cap to size_t max for consistency
         return free > SIZE_MAX ? SIZE_MAX : static_cast<size_t>(free);

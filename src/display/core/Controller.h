@@ -5,6 +5,7 @@
 #include "PluginManager.h"
 #include "Settings.h"
 #include "SystemInfo.h"
+#include <FS.h>
 #include <WiFi.h>
 #include <display/core/ProfileManager.h>
 #include <display/core/process/Process.h>
@@ -47,6 +48,9 @@ class Controller {
     bool isReady() const;
     bool isVolumetricAvailable() const;
     bool isSDCard() const { return sdcard; }
+    FS *getStorageFS() const { return storageFs; }
+    uint64_t getStorageTotalBytes() const;
+    uint64_t getStorageUsedBytes() const;
     virtual float getTargetPressure() const { return targetPressure; }
     virtual float getTargetFlow() const { return targetFlow; }
     virtual float getCurrentPressure() const { return pressure; }
@@ -112,6 +116,7 @@ class Controller {
 #ifndef GAGGIMATE_HEADLESS
     void setupPanel();
 #endif
+    void setupStorage();
     void setupBluetooth();
     void onSystemInfo(const char *hardware, const char *version, uint32_t protocolVersion, bool dimming, bool pressure,
                       bool ledControl, bool tof);
@@ -195,6 +200,7 @@ class Controller {
     bool processCompleted = false;
     bool steamReady = false;
     bool sdcard = false;
+    FS *storageFs = nullptr;
     int error = 0;
 
     // Bluetooth scale connection monitoring

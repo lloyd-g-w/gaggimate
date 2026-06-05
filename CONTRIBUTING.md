@@ -78,6 +78,21 @@ When building the firmware, the `scripts/build_spiffs.sh` script installs the we
 
    - Run `npm install` inside the `web/` directory for the web interface.
    - Ensure [PlatformIO](https://platformio.org/install/cli) is available for firmware builds.
+   - On NixOS, use the provided FHS development shell instead of installing
+     PlatformIO globally:
+
+     ```shell
+     nix develop
+     ```
+
+     PlatformIO downloads ESP32 toolchains into `.platformio/`. The FHS shell
+     wrapper provides the runtime layout those prebuilt toolchains expect on
+     NixOS. If a firmware build or upload fails with a missing dynamic linker or
+     shared library error, run it through the wrapper:
+
+     ```shell
+     nix develop -c gaggimate-dev -c "platformio run -e display"
+     ```
 
 3. **Build the project** to verify your environment:
 

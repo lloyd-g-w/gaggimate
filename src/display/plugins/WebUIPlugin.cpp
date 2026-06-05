@@ -1,7 +1,6 @@
 #include "WebUIPlugin.h"
 #include <DNSServer.h>
 #include <LittleFS.h>
-#include <SD_MMC.h>
 #include <algorithm>
 #include <display/core/Controller.h>
 #include <display/core/ProfileManager.h>
@@ -46,6 +45,9 @@ void WebUIPlugin::setup(Controller *_controller, PluginManager *_pluginManager) 
             updateOTAProgress(phase, progress);
         },
         "display-firmware.bin", "display-filesystem.bin", "board-firmware.bin");
+    if (controller->isSDCard()) {
+        ota->setControllerUpdateFS(controller->getStorageFS());
+    }
     pluginManager->on("controller:wifi:connect", [this](Event const &event) {
         apMode = event.getInt("AP");
         start();
@@ -237,10 +239,7 @@ void WebUIPlugin::setupServer() {
     server.on("/api/scales/connect", [this](AsyncWebServerRequest *request) { handleBLEScaleConnect(request); });
     server.on("/api/scales/scan", [this](AsyncWebServerRequest *request) { handleBLEScaleScan(request); });
     server.on("/api/scales/info", [this](AsyncWebServerRequest *request) { handleBLEScaleInfo(request); });
-    FS *fs = &LittleFS;
-    if (controller->isSDCard()) {
-        fs = &SD_MMC;
-    }
+    FS *fs = controller->getStorageFS();
     server.serveStatic("/api/history/", *fs, "/h/").setCacheControl("no-store");
     server.on("/api/history/index.bin", HTTP_GET, [this, fs](AsyncWebServerRequest *request) {
         // Serve the binary index file directly
@@ -845,8 +844,8 @@ void WebUIPlugin::updateOTAStatus(const String &version) {
     doc["uiTaskHealth"] = controller->getUI()->isTaskHealthy();
 #endif
     if (controller->isSDCard()) {
-        const uint64_t total = SD_MMC.cardSize();
-        const uint64_t used = SD_MMC.usedBytes();
+        const uint64_t total = controller->getStorageTotalBytes();
+        const uint64_t used = controller->getStorageUsedBytes();
         const uint64_t freeBytes = total > used ? (total - used) : 0;
         doc["sdTotal"] = total;
         doc["sdUsed"] = used;

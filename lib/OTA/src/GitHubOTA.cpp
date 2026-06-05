@@ -137,6 +137,8 @@ void GitHubOTA::update(bool controller, bool display) {
 
 void GitHubOTA::setReleaseUrl(const String &release_url) { this->_release_url = release_url; }
 
+void GitHubOTA::setControllerUpdateFS(FS *fs) { _controller_ota.setUpdateFS(fs); }
+
 HTTPUpdateResult GitHubOTA::update_firmware(const String &url) {
     const char *TAG = "update_firmware";
     ESP_LOGI(TAG, "Download URL: %s\n", url.c_str());
