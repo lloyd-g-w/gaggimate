@@ -209,11 +209,29 @@ bool ProfileManager::saveProfile(Profile &profile) {
 }
 
 bool ProfileManager::deleteProfile(const String &uuid) {
+    const bool wasSelected = (_settings.getSelectedProfile() == uuid);
     removeFavoritedProfile(uuid);
     if (_settings.getStartupProfile() == uuid) {
         _settings.setStartupProfile("");
     }
-    return _fs->remove(profilePath(uuid));
+    if (!_fs->remove(profilePath(uuid))) {
+        return false;
+    }
+
+    if (!wasSelected) {
+        return true;
+    }
+
+    auto remainingProfiles = listProfiles();
+    if (!remainingProfiles.empty()) {
+        selectProfile(remainingProfiles.front());
+        return true;
+    }
+
+    _settings.setSelectedProfile("");
+    selectedProfile = Profile{};
+    _plugin_manager->trigger("profiles:profile:select", "id", "");
+    return true;
 }
 
 bool ProfileManager::profileExists(const String &uuid) { return _fs->exists(profilePath(uuid)); }
