@@ -44,7 +44,7 @@ void WebUIPlugin::setup(Controller *_controller, PluginManager *_pluginManager) 
             pluginManager->trigger("ota:update:progress", "progress", progress);
             updateOTAProgress(phase, progress);
         },
-        "display-firmware.bin", "display-filesystem.bin", "board-firmware.bin");
+        OTA_DISPLAY_FIRMWARE, "display-filesystem.bin", "board-firmware.bin");
     if (controller->isSDCard()) {
         ota->setControllerUpdateFS(controller->getStorageFS());
     }

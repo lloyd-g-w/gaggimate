@@ -17,7 +17,12 @@ constexpr size_t STATUS_PERIOD = 500;
 constexpr size_t DNS_PERIOD = 50;
 
 const String LOCAL_URL = "http://4.4.4.1/";
-const String RELEASE_URL = "https://github.com/jniebuhr/gaggimate/releases/";
+const String RELEASE_URL = "https://github.com/lloyd-g-w/gaggimate/releases/";
+#ifdef GAGGIMATE_HEADLESS_T8
+const String OTA_DISPLAY_FIRMWARE = "display-headless-t8-firmware.bin";
+#else
+const String OTA_DISPLAY_FIRMWARE = "display-firmware.bin";
+#endif
 
 class ProfileManager;
 

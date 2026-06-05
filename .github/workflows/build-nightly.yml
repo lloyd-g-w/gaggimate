@@ -1,4 +1,5 @@
 on:
+  workflow_dispatch:
   push:
     branches:
       - "master"
@@ -38,7 +39,7 @@ jobs:
           mkdir -p upload/display
           mkdir -p upload/headless
           mkdir -p upload/controller
-          git tag -d nightly
+          git tag -d nightly || true
           git describe --tags --dirty > out/version.txt
       - name: Build Web
         run: ./scripts/build_spiffs.sh
@@ -96,6 +97,13 @@ jobs:
           cp .pio/build/display-headless/firmware.bin upload/headless/firmware.bin
           cp .pio/build/display-headless/partitions.bin upload/headless/partitions.bin
           cp .pio/build/display-headless/bootloader.bin upload/headless/bootloader.bin
+      - name: Build LilyGo T8 headless
+        run: |
+          export PLATFORMIO_BUILD_FLAGS="'-DNIGHTLY_BUILD'"
+          pio run -e display-headless-t8
+          cp .pio/build/display-headless-t8/firmware.bin out/display-headless-t8-firmware.bin
+          cp .pio/build/display-headless-t8/partitions.bin out/display-headless-t8-partitions.bin
+          cp .pio/build/display-headless-t8/bootloader.bin out/display-headless-t8-bootloader.bin
       - uses: ./.github/actions/upload-firmware
         env:
           UPDATE_SERVER_HOST: ${{ secrets.UPDATE_SERVER_HOST }}
