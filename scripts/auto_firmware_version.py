@@ -1,11 +1,18 @@
 import subprocess
 import datetime
+import os
 
 Import("env")
 
 def get_firmware_specifier_build_flag():
-    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--exclude", "nightly"], stdout=subprocess.PIPE, text=True) #Uses any tags
+    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--exclude", "nightly"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) #Uses any tags
     build_version = ret.stdout.strip()
+    if not build_version:
+        run_number = os.environ.get("GITHUB_RUN_NUMBER")
+        if run_number:
+            build_version = "v0.0." + run_number
+        else:
+            build_version = "v0.0.0"
     build_flag = "#define BUILD_GIT_VERSION \"" + build_version + "\""
     print ("Build version: " + build_version)
     return build_flag
