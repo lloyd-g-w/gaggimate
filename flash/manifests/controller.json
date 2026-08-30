@@ -1,0 +1,16 @@
+{
+  "name": "GaggiMate Controller",
+  "version": "nightly",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "../../nightly/board-bootloader.bin", "offset": 0 },
+        { "path": "../../nightly/board-partitions.bin", "offset": 32768 },
+        { "path": "../boot_app0.bin", "offset": 57344 },
+        { "path": "../../nightly/board-firmware.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}
