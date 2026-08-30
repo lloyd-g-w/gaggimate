@@ -1,0 +1,17 @@
+{
+  "name": "GaggiMate Display (LilyGo T-RGB)",
+  "version": "nightly",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "../../nightly/display-bootloader.bin", "offset": 0 },
+        { "path": "../../nightly/display-partitions.bin", "offset": 32768 },
+        { "path": "../boot_app0.bin", "offset": 57344 },
+        { "path": "../../nightly/display-firmware.bin", "offset": 65536 },
+        { "path": "../../nightly/display-filesystem.bin", "offset": 13172736 }
+      ]
+    }
+  ]
+}

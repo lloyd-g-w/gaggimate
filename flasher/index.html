@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GaggiMate Nightly Flasher</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1d2026;
+    --panel-border: #2c3038;
+    --text: #e8e9ec;
+    --muted: #9aa0ac;
+    --accent: #4fd1a5;
+    --accent-dark: #2f9d76;
+    --warn: #e0a94b;
+    --danger: #e0625e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0 1.5rem 3rem;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 0 1rem;
+  }
+  h1 {
+    margin: 0 0 0.25rem;
+    font-size: 1.6rem;
+  }
+  .subtitle {
+    color: var(--muted);
+    margin: 0 0 1rem;
+    font-size: 0.95rem;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+  }
+  .badge.version { color: var(--accent); border-color: var(--accent-dark); }
+  button.refresh {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 0.4rem 0.9rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  button.refresh:hover { border-color: var(--accent-dark); }
+  button.refresh:disabled { opacity: 0.5; cursor: default; }
+  .banner {
+    max-width: 960px;
+    margin: 0 auto 1rem;
+    padding: 0.7rem 1rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .banner.warn { background: rgba(224, 169, 75, 0.12); border: 1px solid var(--warn); color: var(--warn); }
+  .banner.danger { background: rgba(224, 98, 94, 0.12); border: 1px solid var(--danger); color: var(--danger); }
+  .banner.visible { display: block; }
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 1.1rem 1.2rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .card.not-ready { opacity: 0.55; }
+  .card.not-ready esp-web-install-button {
+    pointer-events: none;
+    opacity: 0.45;
+  }
+  .card h2 {
+    margin: 0;
+    font-size: 1.05rem;
+  }
+  .card p.desc {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.88rem;
+    line-height: 1.4;
+  }
+  .asset-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .asset-list li {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.15rem 0;
+    border-bottom: 1px dashed var(--panel-border);
+  }
+  .asset-list li:last-child { border-bottom: none; }
+  .asset-list .missing { color: var(--danger); }
+  .card-footer {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .not-ready-note {
+    font-size: 0.8rem;
+    color: var(--warn);
+  }
+  esp-web-install-button {
+    --esp-tools-button-color: var(--accent);
+  }
+  footer {
+    max-width: 960px;
+    margin: 2rem auto 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    border-top: 1px solid var(--panel-border);
+    padding-top: 1rem;
+  }
+  footer a { color: var(--accent); }
+  code {
+    background: #00000040;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>GaggiMate Nightly Flasher</h1>
+  <p class="subtitle">Flash controller, display, and headless firmware straight from your browser over USB.</p>
+  <div class="meta-row">
+    <span class="badge version" id="badge-version">version: …</span>
+    <span class="badge" id="badge-published">published: …</span>
+    <span class="badge" id="badge-repo">repo: …</span>
+    <button class="refresh" id="refresh-btn">Refresh from GitHub</button>
+  </div>
+</header>
+
+<div class="banner warn" id="banner-serial">
+  Your browser does not support Web Serial. Open this page in a recent Chrome or Edge to flash devices.
+</div>
+<div class="banner warn" id="banner-static">
+  Served from GitHub Pages — firmware updates automatically with every nightly build. No local server needed.
+</div>
+<div class="banner danger" id="banner-error"></div>
+
+<main id="cards"></main>
+
+<footer>
+  <p>
+    <strong>Tips:</strong> hold the <code>BOOT</code> button while plugging in the device if it is not detected.
+    Use the install dialog's <code>⋮</code> menu and choose <em>Erase device</em> the first time you flash a board,
+    or whenever switching between firmware variants.
+  </p>
+  <p>
+    Firmware is synced from the
+    <a href="https://github.com/lloyd-g-w/gaggimate/releases/tag/nightly" target="_blank" rel="noopener" id="footer-release-link">nightly release</a>
+    on GitHub, which is rebuilt automatically on every push to <code>master</code>.
+  </p>
+</footer>
+
+<script>
+const REPO = "lloyd-g-w/gaggimate";
+const TAG = "nightly";
+
+// LOCAL mode talks to flasher/serve.py (absolute /api/*, /manifests/*,
+// /firmware/* routes). STATIC mode is a GitHub Pages deploy of this same
+// file under gh-pages:/flash/ with no backend: manifests are the
+// committed flasher/manifests/*.json (relative paths resolving into the
+// sibling gh-pages:/nightly/ directory that Build Nightly refreshes), and
+// readiness/version/publish-date come from best-effort relative/CORS
+// fetches instead of /api/status. Mode is detected once at load by
+// probing /api/status; everything below branches on `STATIC_MODE`.
+let STATIC_MODE = false;
+
+document.getElementById("footer-release-link").href = `https://github.com/${REPO}/releases/tag/${TAG}`;
+
+const TARGETS = [
+  {
+    id: "controller",
+    title: "Controller",
+    desc: "GaggiMate controller board firmware (pump, valve, sensors).",
+    assets: ["board-bootloader.bin", "board-partitions.bin", "board-firmware.bin"],
+  },
+  {
+    id: "display",
+    title: "Display \u2014 LilyGo T-RGB",
+    desc: "Standard GaggiMate touchscreen firmware, includes the embedded web UI filesystem.",
+    assets: ["display-bootloader.bin", "display-partitions.bin", "display-firmware.bin", "display-filesystem.bin"],
+  },
+  {
+    id: "headless",
+    title: "Headless",
+    desc: "T-RGB class board without the physical display UI, includes the web UI filesystem.",
+    assets: ["display-headless-bootloader.bin", "display-headless-partitions.bin", "display-headless-firmware.bin", "display-headless-filesystem.bin"],
+  },
+  {
+    id: "headless-t8",
+    title: "Headless \u2014 LilyGo T8-S3 (fork)",
+    desc: "SD-card variant of headless mode added in this fork. No filesystem image is flashed; an SD card is required for shot history and OTA staging.",
+    assets: ["display-headless-t8-bootloader.bin", "display-headless-t8-partitions.bin", "display-headless-t8-firmware.bin"],
+  },
+];
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return "?";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function renderCards(status) {
+  const container = document.getElementById("cards");
+  container.innerHTML = "";
+  const assets = (status && status.assets) || {};
+  const ready = (status && status.ready) || {};
+
+  for (const target of TARGETS) {
+    const isReady = !!ready[target.id];
+    const card = document.createElement("div");
+    card.className = "card" + (isReady ? "" : " not-ready");
+
+    const title = document.createElement("h2");
+    title.textContent = target.title;
+    card.appendChild(title);
+
+    const desc = document.createElement("p");
+    desc.className = "desc";
+    desc.textContent = target.desc;
+    card.appendChild(desc);
+
+    const list = document.createElement("ul");
+    list.className = "asset-list";
+    for (const name of target.assets) {
+      const info = assets[name] || {};
+      const li = document.createElement("li");
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = name;
+      const sizeSpan = document.createElement("span");
+      if (info.cached) {
+        // A static-mode HEAD can succeed without a Content-Length header;
+        // the file is present, so show a checkmark rather than "?".
+        sizeSpan.textContent = (info.size === null || info.size === undefined)
+          ? "\u2713"
+          : formatBytes(info.size);
+      } else {
+        sizeSpan.textContent = "missing";
+        li.classList.add("missing");
+      }
+      li.appendChild(nameSpan);
+      li.appendChild(sizeSpan);
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+
+    const cardFooter = document.createElement("div");
+    cardFooter.className = "card-footer";
+
+    // Always render a correctly wired install button; when the target's
+    // firmware is not cached/reachable yet it is visually disabled (CSS
+    // blocks pointer events via .card.not-ready) and a note explains why.
+    // LOCAL mode is served by serve.py at an absolute /manifests/ route;
+    // STATIC mode is a GitHub Pages deploy where index.html lives next to
+    // manifests/ (both under gh-pages:/flash/), so the same relative path
+    // resolves correctly in both cases without branching here.
+    const btn = document.createElement("esp-web-install-button");
+    btn.setAttribute("manifest", STATIC_MODE ? `manifests/${target.id}.json` : `/manifests/${target.id}.json`);
+    if (!isReady) {
+      btn.setAttribute("aria-disabled", "true");
+      const note = document.createElement("p");
+      note.className = "not-ready-note";
+      note.textContent = STATIC_MODE
+        ? "Not ready \u2014 one or more firmware files are not reachable on GitHub Pages yet. Click Re-check files."
+        : "Not ready \u2014 firmware not yet cached locally. Click Refresh from GitHub.";
+      cardFooter.appendChild(note);
+    }
+    cardFooter.appendChild(btn);
+
+    card.appendChild(cardFooter);
+    container.appendChild(card);
+  }
+}
+
+function renderMeta(status) {
+  document.getElementById("badge-version").textContent = `version: ${status.version || "unknown"}`;
+  document.getElementById("badge-published").textContent = `published: ${status.published_at ? new Date(status.published_at).toLocaleString() : "unknown"}`;
+  document.getElementById("badge-repo").textContent = `${status.repo || "?"} @ ${status.tag || "?"}${status.offline ? " (offline)" : ""}`;
+
+  const errorBanner = document.getElementById("banner-error");
+  if (status.error) {
+    errorBanner.textContent = `${STATIC_MODE ? "Sync issue" : "GitHub sync issue"}: ${status.error}. Showing cached firmware, if any.`;
+    errorBanner.classList.add("visible");
+  } else {
+    errorBanner.classList.remove("visible");
+  }
+}
+
+// ---- LOCAL mode: talks to flasher/serve.py -------------------------------
+
+async function loadLocalStatus() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    const status = await res.json();
+    renderMeta(status);
+    renderCards(status);
+  } catch (err) {
+    document.getElementById("banner-error").textContent = `Could not reach the local flasher server: ${err}`;
+    document.getElementById("banner-error").classList.add("visible");
+    renderCards({});
+  }
+}
+
+async function refreshLocal() {
+  const res = await fetch("/api/refresh", { method: "POST" });
+  const status = await res.json();
+  renderMeta(status);
+  renderCards(status);
+}
+
+// ---- STATIC mode: GitHub Pages, no backend --------------------------------
+// Firmware readiness/size come from HEAD requests against the sibling
+// gh-pages:/nightly/ directory (relative "../nightly/<asset>"); version
+// comes from the plain-text "../nightly/version.txt" it also contains;
+// the publish date is a best-effort call to the public GitHub API (no
+// auth, so it is silently skipped on failure/rate limit).
+
+async function headAsset(name) {
+  try {
+    const res = await fetch(`../nightly/${name}`, { method: "HEAD", cache: "no-store" });
+    if (!res.ok) return { cached: false };
+    const len = res.headers.get("Content-Length");
+    return { cached: true, size: len !== null ? Number(len) : null };
+  } catch (err) {
+    return { cached: false };
+  }
+}
+
+async function fetchStaticVersion() {
+  try {
+    const res = await fetch("../nightly/version.txt", { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.text()).trim();
+  } catch (err) {
+    return null;
+  }
+}
+
+async function fetchStaticPublishedAt() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${TAG}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.published_at || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function buildStaticStatus() {
+  const allAssetNames = [...new Set(TARGETS.flatMap((t) => t.assets))];
+  const assetChecks = await Promise.all(allAssetNames.map((name) => headAsset(name)));
+  const assets = {};
+  allAssetNames.forEach((name, i) => {
+    assets[name] = assetChecks[i];
+  });
+
+  const ready = {};
+  for (const target of TARGETS) {
+    ready[target.id] = target.assets.every((name) => assets[name] && assets[name].cached);
+  }
+
+  const [version, publishedAt] = await Promise.all([fetchStaticVersion(), fetchStaticPublishedAt()]);
+
+  const anyReady = Object.values(ready).some(Boolean);
+  return {
+    repo: REPO,
+    tag: TAG,
+    version,
+    published_at: publishedAt,
+    offline: false,
+    ready,
+    assets,
+    error: anyReady ? null : "could not reach any nightly firmware files on GitHub Pages",
+  };
+}
+
+async function loadStaticStatus() {
+  const status = await buildStaticStatus();
+  renderMeta(status);
+  renderCards(status);
+}
+
+// ---- Mode detection + shared refresh wiring -------------------------------
+
+async function detectMode() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (res.ok) {
+      // Confirm it is actually our JSON API and not an unrelated 200 (e.g.
+      // a catch-all host serving index.html for every path).
+      const data = await res.json();
+      if (data && typeof data === "object" && "ready" in data) {
+        return false; // LOCAL mode
+      }
+    }
+  } catch (err) {
+    // fall through to STATIC mode
+  }
+  return true; // STATIC mode
+}
+
+async function loadStatus() {
+  if (STATIC_MODE) {
+    await loadStaticStatus();
+  } else {
+    await loadLocalStatus();
+  }
+}
+
+async function refresh() {
+  const btn = document.getElementById("refresh-btn");
+  btn.disabled = true;
+  btn.textContent = STATIC_MODE ? "Checking…" : "Refreshing…";
+  try {
+    if (STATIC_MODE) {
+      await loadStaticStatus();
+    } else {
+      await refreshLocal();
+    }
+  } catch (err) {
+    document.getElementById("banner-error").textContent = `Refresh failed: ${err}`;
+    document.getElementById("banner-error").classList.add("visible");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = STATIC_MODE ? "Re-check files" : "Refresh from GitHub";
+  }
+}
+
+document.getElementById("refresh-btn").addEventListener("click", refresh);
+
+if (!("serial" in navigator)) {
+  document.getElementById("banner-serial").classList.add("visible");
+}
+
+async function init() {
+  STATIC_MODE = await detectMode();
+  if (STATIC_MODE) {
+    document.getElementById("refresh-btn").textContent = "Re-check files";
+    document.getElementById("banner-static").classList.add("visible");
+  }
+  await loadStatus();
+}
+
+init();
+</script>
+</body>
+</html>

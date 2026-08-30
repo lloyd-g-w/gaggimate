@@ -127,6 +127,8 @@ jobs:
       pages: write
       pull-requests: write
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
       - name: Download Firmware Files
         uses: actions/download-artifact@v4
         with:
@@ -149,4 +151,17 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./release
           destination_dir: nightly
+          publish_branch: gh-pages
+      - name: Assemble flasher site
+        run: |
+          mkdir -p site/manifests
+          cp flasher/index.html site/index.html
+          cp flasher/manifests/*.json site/manifests/
+          python3 -c "open('site/boot_app0.bin','wb').write(b'\xff'*8192)"
+      - name: Deploy flasher to GitHub Pages
+        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          destination_dir: flash
           publish_branch: gh-pages
