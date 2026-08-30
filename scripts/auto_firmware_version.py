@@ -5,7 +5,7 @@ import os
 Import("env")
 
 def get_firmware_specifier_build_flag():
-    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--exclude", "nightly"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) #Uses any tags
+    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--exclude", "nightly", "--exclude", "db"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) #Uses any tags
     build_version = ret.stdout.strip()
     if not build_version:
         run_number = os.environ.get("GITHUB_RUN_NUMBER")
@@ -18,7 +18,7 @@ def get_firmware_specifier_build_flag():
     return build_flag
 
 def get_time_specifier_build_flag():
-    build_timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    build_timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     build_flag = "#define BUILD_TIMESTAMP \"" + build_timestamp + "\""
     print ("Build date: " + build_timestamp)
     return build_flag

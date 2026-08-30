@@ -43,7 +43,7 @@ jobs:
         git tag -d nightly || true
         git describe --tags --dirty --exclude nightly > out/version.txt || echo "v0.0.${GITHUB_RUN_NUMBER}" > out/version.txt
     - name: Build Web
-      run: ./scripts/build_spiffs.sh
+      run: ./scripts/build_webui.sh
     - name: Build controller
       run: |
         pio run -e controller

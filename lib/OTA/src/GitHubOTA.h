@@ -38,7 +38,6 @@ class GitHubOTA {
   private:
     HTTPUpdate Updater;
 
-    HTTPUpdateResult update_filesystem(const String &url);
     HTTPUpdateResult update_firmware(const String &url);
 
     uint8_t phase = PHASE_IDLE;
@@ -55,6 +54,8 @@ class GitHubOTA {
     ControllerOTA _controller_ota;
     phase_callback_t _phase_callback = nullptr;
     progress_callback_t _progress_callback = nullptr;
+    bool _controller_update_required = false;
+    bool _screen_update_required = false;
 };
 
 #endif

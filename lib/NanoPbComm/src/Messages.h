@@ -1,14 +1,8 @@
 #ifndef NANOPBCOMM_MESSAGES_H
 #define NANOPBCOMM_MESSAGES_H
 
-// Short, namespaced aliases for the package-prefixed nanopb types so library
-// internals read cleanly (gm::Payload instead of gaggimate_Payload). These are
-// used only inside NanoPbComm -- the high-level GaggiMateClient/Server API
-// exposes plain C++ types, so firmware code never sees nanopb structs.
-//
-// Tag/descriptor/init macros (gaggimate_*_tag, gaggimate_*_msg,
-// gaggimate_*_init_zero) are macros, not types, so they are referenced with
-// their full names where needed.
+// NanoPbComm-internal aliases for nanopb types (gm::Payload vs gaggimate_Payload); firmware never sees nanopb structs.
+// The gaggimate_*_tag/_msg/_init_zero macros are not types, so they keep their full names.
 
 #include "gaggimate.pb.h"
 
@@ -22,7 +16,7 @@ using BoilerControl = gaggimate_BoilerControl;
 using PumpControl = gaggimate_PumpControl;
 using RelayControl = gaggimate_RelayControl;
 using PidSettings = gaggimate_PidSettings;
-using PumpModelCoeffs = gaggimate_PumpModelCoeffs;
+using PumpSettings = gaggimate_PumpSettings;
 using AutotuneRequest = gaggimate_AutotuneRequest;
 using PressureScale = gaggimate_PressureScale;
 using Tare = gaggimate_Tare;
@@ -30,6 +24,7 @@ using LedChannel = gaggimate_LedChannel;
 using LedControl = gaggimate_LedControl;
 
 using DeviceCapabilities = gaggimate_Capabilities;
+using Addon = gaggimate_Addon;
 using SystemInfo = gaggimate_SystemInfo;
 using SensorData = gaggimate_SensorData;
 using BoilerReading = gaggimate_BoilerReading;

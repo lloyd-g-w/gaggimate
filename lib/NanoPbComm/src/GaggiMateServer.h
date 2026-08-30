@@ -7,12 +7,8 @@
 #include <Arduino.h>
 #include <functional>
 
-/**
- * Controller-side protocol facade.
- *
- * Owns a BLE server transport + Endpoint and exposes semantic send methods and
- * typed command callbacks. Pushes SystemInfo to the display on connect.
- */
+// Controller-side protocol facade: owns transport + Endpoint, exposes semantic sends and typed command callbacks;
+// pushes SystemInfo to the display on connect.
 class GaggiMateServer {
   public:
     using PingCallback = std::function<void()>;
@@ -21,7 +17,7 @@ class GaggiMateServer {
     // Binary output: index 0 = brew valve, index 1 = alt relay.
     using RelayCallback = std::function<void(uint8_t index, bool open)>;
     using PidCallback = std::function<void(float kp, float ki, float kd, float kf)>;
-    using PumpModelCallback = std::function<void(float a, float b, float c, float d)>;
+    using PumpSettingsCallback = std::function<void(gm::PumpSettings settings)>;
     using AutotuneCallback = std::function<void(uint32_t testTime, uint32_t samples, uint32_t heaterWattage)>;
     using PressureScaleCallback = std::function<void(float scale)>;
     using TareCallback = std::function<void()>;
@@ -29,15 +25,16 @@ class GaggiMateServer {
 
     GaggiMateServer();
 
-    void init(const String &deviceName, const String &hardware, const String &version, bool dimming, bool pressure,
-              bool ledControl, bool tof);
+    void init(const String &deviceName, const String &hardware, const String &version,
+              const gm::DeviceCapabilities &capabilities);
     bool isConnected() const { return _endpoint.isConnected(); }
+    bool isUpdating() const { return _transport.isUpdating(); }
 
-    void setSystemInfo(const String &hardware, const String &version, bool dimming, bool pressure, bool ledControl, bool tof);
+    void setSystemInfo(const String &hardware, const String &version, const gm::DeviceCapabilities &capabilities);
 
-    // Build a payload without sending (compose your own batch, then send()).
-    // sendSensorData reports boiler 0; the wire format supports several boilers.
-    gm::Payload buildSensorData(float temperature, float pressure, float puckFlow, float pumpFlow, float puckResistance);
+    // Build a payload without sending; sendSensorData reports boiler 0 (the wire format supports several).
+    gm::Payload buildSensorData(float temperature, float pressure, float puckFlow, float pumpFlow, float puckResistance,
+                                float pumpPower = 0.0f, float heaterPower = 0.0f);
     gm::Payload buildButtonState(uint8_t index, bool pressed);
     gm::Payload buildAutotuneResult(float kp, float ki, float kd, float kf);
     gm::Payload buildVolumetricMeasurement(float volume);
@@ -45,12 +42,19 @@ class GaggiMateServer {
     gm::Payload buildError(int code);
 
     // Responses (controller -> display)
-    void sendSensorData(float temperature, float pressure, float puckFlow, float pumpFlow, float puckResistance);
+    void sendSensorData(float temperature, float pressure, float puckFlow, float pumpFlow, float puckResistance,
+                        float pumpPower = 0.0f, float heaterPower = 0.0f);
     void sendButtonState(uint8_t index, bool pressed);
     void sendAutotuneResult(float kp, float ki, float kd, float kf);
     void sendVolumetricMeasurement(float volume);
     void sendTofMeasurement(uint32_t distance);
     void sendError(int code);
+
+    // Drop the BLE link; the ping watchdog uses this so the display sees a real disconnect, not an in-band error.
+    void disconnect() { _transport.disconnect(); }
+
+    // Forget the paired display and advertise openly again (re-pairing escape hatch, e.g. after a screen swap).
+    void clearBonds() { _transport.clearBonds(); }
 
     // Send a pre-built payload / batch of payloads (one frame).
     void send(const gm::Payload &payload) { _endpoint.send(payload); }
@@ -66,7 +70,7 @@ class GaggiMateServer {
     void onPumpControl(PumpCallback cb) { _pumpCb = std::move(cb); }
     void onRelayControl(RelayCallback cb) { _relayCb = std::move(cb); }
     void onPidSettings(PidCallback cb) { _pidCb = std::move(cb); }
-    void onPumpModelCoeffs(PumpModelCallback cb) { _pumpModelCb = std::move(cb); }
+    void onPumpSettings(PumpSettingsCallback cb) { _pumpSettingsCb = std::move(cb); }
     void onAutotune(AutotuneCallback cb) { _autotuneCb = std::move(cb); }
     void onPressureScale(PressureScaleCallback cb) { _pressureScaleCb = std::move(cb); }
     void onTare(TareCallback cb) { _tareCb = std::move(cb); }
@@ -76,13 +80,17 @@ class GaggiMateServer {
     BleServerTransport _transport;
     Endpoint _endpoint;
     gm::SystemInfo _systemInfo = gaggimate_SystemInfo_init_zero;
+    // The BLE subscribe callback can run before the client has finished
+    // installing its notification handler. The first received ping is the
+    // application-level proof that the new session is ready in both directions.
+    bool _sentSystemInfoAfterHandshake = false;
 
     PingCallback _pingCb;
     BoilerCallback _boilerCb;
     PumpCallback _pumpCb;
     RelayCallback _relayCb;
     PidCallback _pidCb;
-    PumpModelCallback _pumpModelCb;
+    PumpSettingsCallback _pumpSettingsCb;
     AutotuneCallback _autotuneCb;
     PressureScaleCallback _pressureScaleCb;
     TareCallback _tareCb;
@@ -91,8 +99,7 @@ class GaggiMateServer {
     void registerHandlers();
     void pushSystemInfo();
 
-    // Drives the endpoint send pump / retransmit independently of the
-    // controller's (slow, 250ms) main loop, on the NimBLE core.
+    // Drives the endpoint send pump / retransmit on the NimBLE core, independent of the slow 250ms main loop.
     TaskHandle_t _taskHandle = nullptr;
     static void pumpTask(void *arg);
 };

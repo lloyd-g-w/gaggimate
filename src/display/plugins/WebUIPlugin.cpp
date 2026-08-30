@@ -10,10 +10,15 @@
 #include <display/plugins/BLEScalePlugin.h>
 #include <display/plugins/ShotHistoryPlugin.h>
 #include <display/util/PsramStlAllocator.h>
+#include <display/util/PsramWsBuffer.h>
+#include <display/util/mathutils.h>
+#include <display/webassets/web_ui_manifest.h>
+#include <esp32-hal-psram.h>
 #include <esp_core_dump.h>
 #include <esp_err.h>
 #include <esp_heap_caps.h>
 #include <esp_partition.h>
+#include <mbedtls/platform.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,9 +32,31 @@ using PsramString = std::basic_string<char, std::char_traits<char>, PsramStlAllo
 static std::unordered_map<uint32_t, PsramString> rxBuffers;
 static WebUIPlugin *g_webUIPlugin = nullptr;
 
+// Serialize a JsonDocument straight into a PSRAM-backed WebSocket message
+// buffer — one exact-sized allocation, off the internal heap. [GM-139]
+static AsyncWebSocketSharedBuffer toWsBuffer(JsonDocument &doc) {
+    const size_t len = measureJson(doc);
+    auto buffer = makePsramWsBuffer(len);
+    serializeJson(doc, buffer->data(), len);
+    return buffer;
+}
+
+// Route mbedTLS allocations to PSRAM.
+static void *mbedtlsPsramCalloc(size_t n, size_t size) { // NOSONAR
+    void *p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p == nullptr) {
+        p = heap_caps_calloc(n, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return p;
+}
+static void mbedtlsPsramFree(void *p) { heap_caps_free(p); } // NOSONAR
+
 WebUIPlugin::WebUIPlugin() : server(80), ws("/ws") { g_webUIPlugin = this; }
 
 void WebUIPlugin::setup(Controller *_controller, PluginManager *_pluginManager) {
+    // Redirect mbedTLS allocations to PSRAM before any TLS (OTA) handshake runs, so the
+    // ~32 KB handshake buffers don't exhaust the scarce internal-DRAM pool. See mbedtlsPsramCalloc.
+    (void)mbedtls_platform_set_calloc_free(mbedtlsPsramCalloc, mbedtlsPsramFree);
     this->controller = _controller;
     this->profileManager = _controller->getProfileManager();
     this->pluginManager = _pluginManager;
@@ -76,6 +103,26 @@ void WebUIPlugin::setup(Controller *_controller, PluginManager *_pluginManager) 
         broadcastJson(doc);
     });
 
+    // Forward "shot saved to history" events to WebSocket clients, so the
+    // dashboard can refetch the recent-shots buffer at the right time.
+    pluginManager->on("evt:history-shot-saved", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:history-shot-saved";
+        doc["id"] = event.getInt("id");
+        broadcastJson(doc);
+    });
+
+    // Forward live shot-finished stats (pressure/flow) to WebSocket clients, so
+    // the dashboard's finished card can show them without waiting for the
+    // history file write.
+    pluginManager->on("evt:shot-finished-stats", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:shot-finished-stats";
+        doc["maxPressure"] = event.getFloat("maxPressure");
+        doc["avgFlow"] = event.getFloat("avgFlow");
+        broadcastJson(doc);
+    });
+
     // Subscribe to Bluetooth scale weight updates
     pluginManager->on("controller:volumetric-measurement:bluetooth:change",
                       [this](Event const &event) { this->currentBluetoothWeight = event.getFloat("value"); });
@@ -96,8 +143,12 @@ void WebUIPlugin::loop() {
     if (!serverRunning) {
         return;
     }
-    const long now = millis();
-    if ((lastUpdateCheck == 0 || now > lastUpdateCheck + UPDATE_CHECK_INTERVAL)) {
+    const unsigned long now = millis();
+    // Skip the (blocking, TLS) update check while a process is active: a brew/steam/grind
+    // must not have the control loop stalled for the duration of the handshake, nor compete
+    // with it for memory. isActive() is the reliable "a process is running" signal. Subtraction
+    // (not now > last + interval) keeps the interval check millis()-rollover-safe.
+    if (!controller->isActive() && (lastUpdateCheck == 0 || now - lastUpdateCheck > UPDATE_CHECK_INTERVAL)) {
         ota->checkForUpdates();
         pluginManager->trigger("ota:update:status", "value", ota->isUpdateAvailable());
         lastUpdateCheck = now;
@@ -107,16 +158,17 @@ void WebUIPlugin::loop() {
         lastStatus = now;
         statusDoc.clear();
         statusDoc["tp"] = "evt:status";
-        statusDoc["ct"] = controller->getCurrentTemp();
+        statusDoc["ct"] = round_to(controller->getCurrentTemp(), 3);
         statusDoc["tt"] = controller->getTargetTemp();
-        statusDoc["pr"] = controller->getCurrentPressure();
-        statusDoc["fl"] = controller->getCurrentPumpFlow();
+        statusDoc["pr"] = round_to(controller->getCurrentPressure(), 3);
+        statusDoc["fl"] = round_to(controller->getCurrentPumpFlow(), 3);
         statusDoc["pt"] = controller->getTargetPressure();
         statusDoc["m"] = controller->getMode();
         statusDoc["p"] = controller->getProfileManager()->getSelectedProfile().label;
         statusDoc["puid"] = controller->getProfileManager()->getSelectedProfile().id;
         statusDoc["cp"] = controller->getSystemInfo().capabilities.pressure;
         statusDoc["cd"] = controller->getSystemInfo().capabilities.dimming;
+        statusDoc["gp"] = controller->getSystemInfo().capabilities.hasAddon(7);
         statusDoc["tw"] = profileManager->getSelectedProfile().getTotalVolume(); // total target weight for the process
         statusDoc["bta"] = controller->isVolumetricAvailable() ? 1 : 0;
         statusDoc["bt"] =
@@ -131,6 +183,9 @@ void WebUIPlugin::loop() {
         statusDoc["tof"] = controller->getTofDistance();
         statusDoc["rssi"] = 0;
         statusDoc["lat"] = -1; // BLE round-trip latency (ms); -1 = not yet measured
+        statusDoc["pw"] = controller->getCurrentPumpPower();
+        statusDoc["hp"] = round_to(controller->getCurrentHeaterPower(), 3);
+        statusDoc["up"] = ota->isUpdateAvailable() || ota->isUpdateAvailable(true);
 
         if (controller->getClientController()->getClient()->isConnected()) {
             statusDoc["rssi"] = controller->getClientController()->getClient()->getRssi();
@@ -155,6 +210,9 @@ void WebUIPlugin::loop() {
             }
         }
 
+        // Deref under the process lock — other tasks delete the process at any time (GM-147).
+        // Released before broadcastJson so the ws send never runs under the lock.
+        std::unique_lock<std::recursive_mutex> processGuard(controller->getProcessLock());
         Process *process = controller->getProcess();
         if (process == nullptr) {
             process = controller->getLastProcess();
@@ -162,6 +220,9 @@ void WebUIPlugin::loop() {
         if (process != nullptr) {
             auto pObj = statusDoc["process"].to<JsonObject>();
             pObj["a"] = controller->isActive() ? 1 : 0;
+            statusDoc["pkr"] = round_to(controller->getCurrentPuckResistance(), 3);
+            statusDoc["pf"] = round_to(controller->getCurrentPuckFlow(), 3);
+            statusDoc["tf"] = controller->getTargetFlow();
             if (process->getType() == MODE_BREW) {
                 auto *brew = static_cast<BrewProcess *>(process);
                 unsigned long ts = brew->isActive() && controller->isActive() ? millis() : brew->finished;
@@ -196,6 +257,7 @@ void WebUIPlugin::loop() {
                 }
             }
         }
+        processGuard.unlock();
 
         broadcastJson(statusDoc);
     }
@@ -207,6 +269,52 @@ void WebUIPlugin::loop() {
         lastDns = now;
         dnsServer->processNextRequest();
     }
+}
+
+// Linear lookup over the embedded asset table (~60 entries) — a couple of
+// strcmps per request, negligible next to the network round-trip.
+static const WebAsset *findWebAsset(const String &path) {
+    for (size_t i = 0; i < WEB_ASSETS_COUNT; i++) {
+        if (path == WEB_ASSETS[i].path) {
+            return &WEB_ASSETS[i];
+        }
+    }
+    return nullptr;
+}
+
+void WebUIPlugin::serveWebAsset(AsyncWebServerRequest *request) {
+    String path = request->url();
+    if (path.isEmpty() || path == "/") {
+        path = WEB_UI_INDEX_PATH;
+    }
+
+    const WebAsset *asset = findWebAsset(path);
+    if (asset == nullptr && !path.startsWith("/assets/")) {
+        // SPA client-side routes (e.g. /settings, /profiles) aren't real files —
+        // fall back to index.html. A miss under /assets/ is a genuine 404, not a
+        // route, so it is not rewritten.
+        asset = findWebAsset(WEB_UI_INDEX_PATH);
+    }
+    if (asset == nullptr) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    // Serve straight from the memory-mapped flash blob — no copy into RAM, no
+    // filesystem read. AsyncProgmemResponse streams from the pointer in chunks.
+    AsyncWebServerResponse *response =
+        request->beginResponse(200, asset->contentType, gWebUiBlobStart + asset->offset, asset->length);
+    if (asset->gzip) {
+        response->addHeader("Content-Encoding", "gzip");
+    }
+    // Content-hashed build assets (/assets/<hash>.js) never change for a given URL — cache them forever. index.html and
+    // other unhashed files must revalidate so a new build is picked up after an update. [GM-83]
+    if (path.startsWith("/assets/")) {
+        response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
+    } else {
+        response->addHeader("Cache-Control", "no-cache");
+    }
+    request->send(response);
 }
 
 void WebUIPlugin::setupServer() {
@@ -249,15 +357,42 @@ void WebUIPlugin::setupServer() {
             request->send(404, "text/plain", "Index not found");
         }
     });
+    server.on("/api/history/recent.bin", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        // The most recent non-deleted shots, newest first, as a regular shot
+        // index (SIDX header + entries) — same binary format as index.bin,
+        // just truncated, so clients reuse the index.bin parser.
+        constexpr long MAX_RECENT_LIMIT = 50;
+        long limit = 8;
+        if (request->hasArg("limit")) {
+            limit = constrain(request->arg("limit").toInt(), 1L, MAX_RECENT_LIMIT);
+        }
+
+        auto *entries = static_cast<ShotIndexEntry *>(ps_malloc(limit * sizeof(ShotIndexEntry)));
+        if (entries == nullptr) {
+            request->send(500, "text/plain", "Out of memory");
+            return;
+        }
+        size_t count = ShotHistory.readRecentEntries(entries, limit);
+
+        ShotIndexHeader header{};
+        header.magic = SHOT_INDEX_MAGIC;
+        header.version = SHOT_INDEX_VERSION;
+        header.entrySize = SHOT_INDEX_ENTRY_SIZE;
+        header.entryCount = count;
+        header.nextId = 0; // meaningless for a partial view
+
+        AsyncResponseStream *response = request->beginResponseStream("application/octet-stream");
+        response->addHeader("Cache-Control", "no-store");
+        response->write(reinterpret_cast<const uint8_t *>(&header), sizeof(header));
+        response->write(reinterpret_cast<const uint8_t *>(entries), count * sizeof(ShotIndexEntry));
+        free(entries);
+        request->send(response);
+    });
     server.on("/api/core-dump", HTTP_GET, [this](AsyncWebServerRequest *request) { handleCoreDumpDownload(request); });
-    server.onNotFound([](AsyncWebServerRequest *request) { request->send(LittleFS, "/w/index.html"); });
-    // Content-hashed build assets (Vite emits them under /assets/ with a hash in the filename) never change for a
-    // given URL, so let the browser cache them forever and skip the revalidation round-trip entirely. This must be
-    // registered before the catch-all "/" handler so it wins for /assets/* requests. [GM-83]
-    server.serveStatic("/assets/", LittleFS, "/w/assets/").setCacheControl("public, max-age=31536000, immutable");
-    // index.html and other unhashed root files must stay revalidated so a new build (which references freshly
-    // hashed assets) is always picked up after an OTA/filesystem update.
-    server.serveStatic("/", LittleFS, "/w").setDefaultFile("index.html").setCacheControl("no-cache");
+    // The web UI is embedded in firmware flash and served from the memory-mapped blob (see serveWebAsset). It is no
+    // longer in LittleFS, so OTA never touches the partition holding profiles/shots. The catch-all onNotFound handles
+    // every path not claimed by an explicit server.on()/api route above. [GM-106]
+    server.onNotFound([this](AsyncWebServerRequest *request) { serveWebAsset(request); });
     ws.onEvent(
         [this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
             if (type == WS_EVT_CONNECT) {
@@ -373,6 +508,10 @@ void WebUIPlugin::handleWebSocketData(AsyncWebSocket *server, AsyncWebSocketClie
                     controller->raiseGrindTarget();
                 } else if (msgType == "req:lower-grind-target") {
                     controller->lowerGrindTarget();
+                } else if (msgType == "req:raise-brew-target") {
+                    controller->raiseBrewTarget();
+                } else if (msgType == "req:lower-brew-target") {
+                    controller->lowerBrewTarget();
                 } else if (msgType == "req:change-mode") {
                     if (doc["mode"].is<uint8_t>()) {
                         auto mode = doc["mode"].as<uint8_t>();
@@ -393,18 +532,12 @@ void WebUIPlugin::handleWebSocketData(AsyncWebSocket *server, AsyncWebSocketClie
                         resp["rid"] = doc["rid"];
                     }
                     resp["msg"] = "Rebuild started";
-                    size_t bufferSize = measureJson(resp);
-                    auto *buffer = ws.makeBuffer(bufferSize);
-                    serializeJson(resp, buffer->get(), bufferSize);
-                    client->text(buffer);
+                    client->text(toWsBuffer(resp));
                     ShotHistory.startAsyncRebuild();
                 } else if (msgType.startsWith("req:history")) {
                     JsonDocument resp(&psramAllocator);
                     ShotHistory.handleRequest(doc, resp);
-                    size_t bufferSize = measureJson(resp);
-                    auto *buffer = ws.makeBuffer(bufferSize);
-                    serializeJson(resp, buffer->get(), bufferSize);
-                    client->text(buffer);
+                    client->text(toWsBuffer(resp));
                 } else if (msgType == "req:flush:start") {
                     handleFlushStart(client->id(), doc);
                 }
@@ -523,10 +656,7 @@ void WebUIPlugin::handleProfileRequest(uint32_t clientId, JsonDocument &request)
         }
     }
 
-    size_t bufferSize = measureJson(response);
-    auto *buffer = ws.makeBuffer(bufferSize);
-    serializeJson(response, buffer->get(), bufferSize);
-    ws.text(clientId, buffer);
+    ws.text(clientId, toWsBuffer(response));
 }
 
 void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
@@ -548,12 +678,16 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setPid(request->arg("pid"));
             if (request->hasArg("pumpModelCoeffs"))
                 settings->setPumpModelCoeffs(request->arg("pumpModelCoeffs"));
+            if (request->hasArg("pumpSlipCoeffs"))
+                settings->setPumpSlipCoeffs(request->arg("pumpSlipCoeffs"));
             if (request->hasArg("wifiSsid"))
                 settings->setWifiSsid(request->arg("wifiSsid"));
             if (request->hasArg("mdnsName"))
                 settings->setMdnsName(request->arg("mdnsName"));
             if (request->hasArg("wifiPassword") && request->arg("wifiPassword") != "---unchanged---")
                 settings->setWifiPassword(request->arg("wifiPassword"));
+            if (request->hasArg("apPassword") && request->arg("apPassword").length() >= WIFI_AP_PASSWORD_MIN_LENGTH)
+                settings->setWifiApPassword(request->arg("apPassword"));
             settings->setHomekit(request->hasArg("homekit"));
             settings->setBoilerFillActive(request->hasArg("boilerFillActive"));
             if (request->hasArg("startupFillTime"))
@@ -617,6 +751,16 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setAltRelayFunction(request->arg("altRelayFunction").toInt());
             if (request->hasArg("buttonBehavior"))
                 settings->setButtonBehaviorList(explode(request->arg("buttonBehavior"), ','));
+            if (request->hasArg("commutationGain"))
+                settings->setCommutationGain(request->arg("commutationGain").toFloat());
+            if (request->hasArg("convergenceGain"))
+                settings->setConvergenceGain(request->arg("convergenceGain").toFloat());
+            if (request->hasArg("integralGain"))
+                settings->setIntegralGain(request->arg("integralGain").toFloat());
+            if (request->hasArg("maxPumpPower"))
+                settings->setMaxPumpPower(request->arg("maxPumpPower").toFloat());
+            if (request->hasArg("savedScale"))
+                settings->setSavedScale(request->arg("savedScale"));
             settings->setAutoWakeupEnabled(request->hasArg("autowakeupEnabled"));
             if (request->hasArg("autowakeupSchedules")) {
                 // Handle schedule format with days
@@ -683,8 +827,10 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["haTopic"] = settings.getHomeAssistantTopic();
     doc["pid"] = settings.getPid();
     doc["pumpModelCoeffs"] = settings.getPumpModelCoeffs();
+    doc["pumpSlipCoeffs"] = settings.getPumpSlipCoeffs();
     doc["wifiSsid"] = settings.getWifiSsid();
     doc["wifiPassword"] = apMode ? "---unchanged---" : settings.getWifiPassword();
+    doc["apPassword"] = settings.getWifiApPassword();
     doc["mdnsName"] = settings.getMdnsName();
     doc["temperatureOffset"] = String(settings.getTemperatureOffset());
     doc["pressureScaling"] = String(settings.getPressureScaling());
@@ -718,6 +864,11 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     // Add auto-wakeup settings to response
     doc["autowakeupEnabled"] = settings.isAutoWakeupEnabled();
     doc["buttonBehavior"] = implode(settings.getButtonBehaviorList(), ",");
+    doc["commutationGain"] = settings.getCommutationGain();
+    doc["convergenceGain"] = settings.getConvergenceGain();
+    doc["integralGain"] = settings.getIntegralGain();
+    doc["maxPumpPower"] = settings.getMaxPumpPower();
+    doc["savedScale"] = settings.getSavedScale();
 
     // Add schedule format with days
     std::vector<AutoWakeupSchedule> autowakeupSchedules = settings.getAutoWakeupSchedules();
@@ -873,13 +1024,7 @@ void WebUIPlugin::broadcastJson(JsonDocument &doc) {
     if (ws.getClients().empty()) {
         return;
     }
-    const size_t len = measureJson(doc);
-    auto *buffer = ws.makeBuffer(len);
-    if (buffer == nullptr) {
-        return; // out of buffers; drop this broadcast rather than churn the heap
-    }
-    serializeJson(doc, buffer->get(), len);
-    ws.textAll(buffer);
+    ws.textAll(toWsBuffer(doc));
 }
 
 void WebUIPlugin::sendAutotuneResult() {
@@ -904,10 +1049,7 @@ void WebUIPlugin::handleFlushStart(uint32_t clientId, JsonDocument &request) {
     response["tp"] = "res:flush:start";
     response["rid"] = request["rid"];
     response["success"] = true;
-
-    String msg;
-    serializeJson(response, msg);
-    ws.text(clientId, msg);
+    ws.text(clientId, toWsBuffer(response));
 }
 
 void WebUIPlugin::handleCoreDumpDownload(AsyncWebServerRequest *request) {
