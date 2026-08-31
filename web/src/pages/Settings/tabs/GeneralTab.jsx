@@ -125,6 +125,20 @@ export function GeneralTab({
           </InputGroupField>
         </div>
 
+        {/* Display */}
+        <div className='border-base-content/5 mt-6 border-t pt-6'>
+          <h3 className='text-md text-base-content mb-2 font-semibold'>Display</h3>
+          <p className='text-base-content/85 mb-4 text-sm opacity-70'>
+            For upside-down mounted displays. Takes effect after restart.
+          </p>
+          <ToggleField
+            label='Rotate Display 180°'
+            htmlFor='displayRotated'
+            checked={!!formData.displayRotated}
+            onChange={onChange('displayRotated')}
+          />
+        </div>
+
         {/* Predictive Scale Delay */}
         <div className='border-base-content/5 mt-6 border-t pt-6'>
           <h3 className='text-md text-base-content mb-2 font-semibold'>Predictive Scale Delay</h3>

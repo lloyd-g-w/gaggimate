@@ -87,6 +87,11 @@ void beginLvglHelper(Display &board, bool debug) {
     disp_drv.draw_buf = &draw_buf;
     disp_drv.full_refresh = 0;
     disp_drv.direct_mode = board.supportsDirectMode();
+    // Software rotation (used for 180 degree mounting) rewrites flush buffers
+    // in place and is incompatible with direct_mode; this flag also doubles
+    // as the "rotation supported" capability check consumed by DefaultUI, and
+    // costs nothing extra while the display stays unrotated (LV_DISP_ROT_NONE).
+    disp_drv.sw_rotate = board.supportsDirectMode() ? 0 : 1;
     disp_drv.user_data = &board;
     lv_disp_drv_register(&disp_drv);
 

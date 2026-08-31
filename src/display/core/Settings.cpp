@@ -129,6 +129,8 @@ void Settings::setMdnsName(const String &mdnsName) { this->mdnsName.set(mdnsName
 
 void Settings::setHomekit(const bool homekit) { this->homekit.set(homekit); }
 
+void Settings::setDisplayRotated(const bool display_rotated) { this->displayRotated.set(display_rotated); }
+
 void Settings::setVolumetricTarget(bool volumetric_target) { volumetricTarget.set(volumetric_target); }
 
 void Settings::setOTAChannel(const String &otaChannel) { this->otaChannel.set(otaChannel); }

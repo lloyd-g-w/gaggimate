@@ -118,6 +118,7 @@ function buildSubmitFormData(formData, autowakeupSchedules, restart) {
   const formDataToSubmit = new FormData();
   const checkboxKeys = [
     'homekit',
+    'displayRotated',
     'boilerFillActive',
     'smartGrindActive',
     'homeAssistant',
@@ -254,6 +255,7 @@ export function Settings() {
       if (
         [
           'homekit',
+          'displayRotated',
           'boilerFillActive',
           'smartGrindActive',
           'smartGrindToggle',

@@ -368,6 +368,20 @@ void DefaultUI::onVolumetricDelete() {
 }
 
 void DefaultUI::setupPanel() {
+    // Apply the persisted 180-degree rotation before ui_init() creates any
+    // screens, so even the first rendered frame is oriented correctly.
+    // LVGL 8 mirrors touch input automatically once driver->rotated is set;
+    // sw_rotate doubles as the capability flag (it stays 0 for direct-mode
+    // panels and for the desktop sim, where software rotation is unsupported).
+    lv_disp_t *defaultDisp = lv_disp_get_default();
+    if (defaultDisp != nullptr && controller->getSettings().isDisplayRotated()) {
+        if (defaultDisp->driver->sw_rotate) {
+            lv_disp_set_rotation(defaultDisp, LV_DISP_ROT_180);
+        } else {
+            printf("[DefaultUI] 180 degree rotation is not supported on this display driver\n");
+        }
+    }
+
     ui_init();
     setupState();
     applyTheme();

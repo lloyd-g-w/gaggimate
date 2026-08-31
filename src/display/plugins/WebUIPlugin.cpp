@@ -689,6 +689,7 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
             if (request->hasArg("apPassword") && request->arg("apPassword").length() >= WIFI_AP_PASSWORD_MIN_LENGTH)
                 settings->setWifiApPassword(request->arg("apPassword"));
             settings->setHomekit(request->hasArg("homekit"));
+            settings->setDisplayRotated(request->hasArg("displayRotated"));
             settings->setBoilerFillActive(request->hasArg("boilerFillActive"));
             if (request->hasArg("startupFillTime"))
                 settings->setStartupFillTime(request->arg("startupFillTime").toInt() * 1000);
@@ -819,6 +820,7 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["targetSteamTemp"] = settings.getTargetSteamTemp();
     doc["targetWaterTemp"] = settings.getTargetWaterTemp();
     doc["homekit"] = settings.isHomekit();
+    doc["displayRotated"] = settings.isDisplayRotated();
     doc["homeAssistant"] = settings.isHomeAssistant();
     doc["haUser"] = settings.getHomeAssistantUser();
     doc["haPassword"] = settings.getHomeAssistantPassword();
