@@ -9,6 +9,11 @@
 #define BREW_MIN_DURATION_MS 5000
 #define BREW_MAX_DURATION_MS 300000
 #define BREW_SAFETY_DURATION_MS BREW_MAX_DURATION_MS
+// Momentary brew button: hold this long to start a flush-until-release
+// instead of the normal short-press brew action.
+#define BREW_HOLD_FLUSH_THRESHOLD_MS 1000
+// Safety cap: ends the hold-flush on its own if a release edge is lost.
+#define BREW_HOLD_FLUSH_MAX_DURATION_S 60
 #define BREW_MIN_VOLUMETRIC 5.0
 #define BREW_MAX_VOLUMETRIC 250.0
 #define DEFAULT_STANDBY_TIMEOUT_MS 900000

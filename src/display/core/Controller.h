@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <display/core/ProfileManager.h>
 #include <display/core/process/Process.h>
+#include <atomic>
 #include <mutex>
 #include <vector>
 #ifndef GAGGIMATE_HEADLESS
@@ -159,6 +160,13 @@ class Controller {
     void handleWaterButton(int buttonStatus);
     void handleProfileButton(int buttonStatus, String id);
     void handleProfileUpdate();
+    // Momentary brew button: the press action (performBrewButtonAction, the
+    // original switch(getMode()) body) is deferred until either the hold
+    // threshold elapses in loop() (-> startHoldFlush) or the button is
+    // released first (-> short press, same as before this feature).
+    void performBrewButtonAction();
+    void startHoldFlush();
+    void stopHoldFlush();
 
     // Private Attributes
 #ifndef GAGGIMATE_HEADLESS
@@ -204,6 +212,24 @@ class Controller {
     mutable std::recursive_mutex processMutex;
     Process *currentProcess = nullptr;
     Process *lastProcess = nullptr;
+
+    // Momentary brew button hold-to-flush state machine. Edges arrive on the
+    // BLE callback task (handleBrewButton) while the hold threshold fires on
+    // the main task (loop()), so every transition claims ownership atomically
+    // (exchange/CAS) - a plain check-then-store could double-fire an action:
+    //   IDLE -> PENDING     press (supersedes any stale state)
+    //   PENDING -> IDLE     release before threshold: short-press action
+    //   PENDING -> STARTING loop() wins the threshold race
+    //   STARTING -> FLUSHING startHoldFlush() succeeded, no release meanwhile
+    //   any -> IDLE         release; a release seen as STARTING is honored by
+    //                       the starter's failed CAS, which stops the flush.
+    // holdFlushProcess (guarded by processMutex) records which process the
+    // hold owns so a late release can never deactivate an unrelated process;
+    // deactivateLocked() nulls it the moment that process ends for any reason.
+    enum class BrewHoldState : uint8_t { IDLE, PENDING, STARTING, FLUSHING };
+    std::atomic<BrewHoldState> brewHoldState{BrewHoldState::IDLE};
+    std::atomic<uint32_t> brewButtonPressStart{0};
+    Process *holdFlushProcess = nullptr;
 
     unsigned long grindActiveUntil = 0;
     unsigned long lastPing = 0;

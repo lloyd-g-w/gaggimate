@@ -612,6 +612,28 @@ void Controller::loop() {
 
     unsigned long now = millis();
 
+    // Momentary brew button: resolve a pending press once it has been held for
+    // BREW_HOLD_FLUSH_THRESHOLD_MS. Holding while a process is already running,
+    // or while in standby, keeps the original single-action press semantics
+    // (there is nothing sensible to "flush into" there); otherwise the hold
+    // becomes a flush-until-release. A release arriving before this fires is
+    // handled directly in handleBrewButton() as a short press.
+    if (brewHoldState.load() == BrewHoldState::PENDING && settings.isMomentaryButtons() &&
+        now - brewButtonPressStart >= BREW_HOLD_FLUSH_THRESHOLD_MS) {
+        BrewHoldState expected = BrewHoldState::PENDING;
+        if (brewHoldState.compare_exchange_strong(expected, BrewHoldState::STARTING)) {
+            if (isActive() || getMode() == MODE_STANDBY) {
+                performBrewButtonAction();
+                expected = BrewHoldState::STARTING;
+                // A release during the action may already have set IDLE; either
+                // way exactly one side wins and no second action can fire.
+                brewHoldState.compare_exchange_strong(expected, BrewHoldState::IDLE);
+            } else {
+                startHoldFlush();
+            }
+        }
+    }
+
     // A config burst right after a reconnect can be lost in the unstable BLE window,
     // and a spurious ACK then stops the reliable layer retrying. Re-send until it lands.
     if (comms.isConnected() && now < configResendUntil && (now - lastConfigResend) >= CONFIG_RESEND_INTERVAL_MS) {
@@ -1095,6 +1117,12 @@ void Controller::deactivateLocked(std::vector<const char *> &events) {
     if (currentProcess == nullptr) {
         return;
     }
+    if (currentProcess == holdFlushProcess) {
+        // The hold-to-flush process is ending (release, safety cap, or any
+        // other path): drop ownership so a late release cannot target a
+        // process that starts afterwards.
+        holdFlushProcess = nullptr;
+    }
     delete lastProcess;
     lastProcess = currentProcess;
     currentProcess = nullptr;
@@ -1257,43 +1285,150 @@ void Controller::onVolumetricDelete() {
     }
 }
 
-void Controller::handleBrewButton(int brewButtonStatus) {
-    if (brewButtonStatus) {
-        switch (getMode()) {
-        case MODE_STANDBY:
+// The original handleBrewButton press-time switch(getMode()), extracted so it
+// can run either immediately (rocker) or deferred to a short-press release /
+// hold-threshold timeout (momentary — see handleBrewButton and loop()).
+void Controller::performBrewButtonAction() {
+    switch (getMode()) {
+    case MODE_STANDBY:
+        deactivateStandby();
+        break;
+    case MODE_BREW:
+        if (!isActive()) {
             deactivateStandby();
-            break;
-        case MODE_BREW:
-            if (!isActive()) {
-                deactivateStandby();
-                clear();
-                activate();
-            } else if (settings.isMomentaryButtons()) {
-                deactivate();
-                clear();
-            }
-            break;
-        case MODE_WATER:
+            clear();
             activate();
-            break;
-        case MODE_STEAM:
+        } else if (settings.isMomentaryButtons()) {
             deactivate();
-            setMode(MODE_BREW);
+            clear();
+        }
+        break;
+    case MODE_WATER:
+        activate();
+        break;
+    case MODE_STEAM:
+        deactivate();
+        setMode(MODE_BREW);
+    default:
+        break;
+    }
+}
+
+void Controller::handleBrewButton(int brewButtonStatus) {
+    const bool momentary = settings.isMomentaryButtons();
+    if (brewButtonStatus) {
+        if (momentary) {
+            // Defer: a short press acts on release (unchanged behavior); a
+            // hold of BREW_HOLD_FLUSH_THRESHOLD_MS or more is resolved in
+            // loop() and becomes a flush-until-release instead. A fresh press
+            // unconditionally supersedes stale hold state from a lost release
+            // edge; if that stale flush is somehow still running, the
+            // threshold fallback (isActive()) turns this press into a stop.
+            brewButtonPressStart = millis();
+            brewHoldState.store(BrewHoldState::PENDING);
+            return;
+        }
+        performBrewButtonAction();
+        return;
+    }
+    if (momentary) {
+        switch (brewHoldState.exchange(BrewHoldState::IDLE)) {
+        case BrewHoldState::PENDING:
+            // Released before the hold threshold: short press, original behavior.
+            performBrewButtonAction();
+            break;
+        case BrewHoldState::FLUSHING:
+            // Hold released: end the flush (only while it still owns the process).
+            stopHoldFlush();
+            break;
+        case BrewHoldState::STARTING:
+            // loop() is starting the flush right now; its STARTING->FLUSHING
+            // CAS will fail against our IDLE and it stops the flush itself.
+            break;
         default:
             break;
         }
-    } else if (!settings.isMomentaryButtons()) {
-        if (getMode() == MODE_BREW) {
-            if (isActive()) {
-                deactivate();
-                clear();
-            } else {
-                clear();
-            }
-        } else if (getMode() == MODE_WATER) {
+        return;
+    }
+    if (getMode() == MODE_BREW) {
+        if (isActive()) {
             deactivate();
+            clear();
+        } else {
+            clear();
+        }
+    } else if (getMode() == MODE_WATER) {
+        deactivate();
+    }
+}
+
+void Controller::startHoldFlush() {
+    // Same shape as onFlush(), but the profile copy is given a longer duration
+    // (BREW_HOLD_FLUSH_MAX_DURATION_S) since this flush is meant to keep running
+    // until the button is released, not fire-and-forget; the duration is only a
+    // safety cap for a lost release edge. Mode handling mirrors the "flush"
+    // button-behavior block above: ensure MODE_BREW so the flush UI renders,
+    // but only when no other process is currently running.
+    if (getMode() == MODE_STANDBY) {
+        deactivateStandby();
+    }
+    if (getMode() != MODE_BREW && !isActive()) {
+        setMode(MODE_BREW);
+    }
+    Profile profile = FLUSH_PROFILE;
+    profile.phases[0].duration = BREW_HOLD_FLUSH_MAX_DURATION_S;
+    // Allocate outside the lock; reachable from the UI, AsyncTCP and BLE tasks (GM-147).
+    auto *flush = new BrewProcess(profile, ProcessTarget::TIME, settings.getBrewDelay());
+    std::vector<const char *> events;
+    bool started = false;
+    {
+        std::lock_guard<std::recursive_mutex> guard(processMutex);
+        if (isActiveLocked()) {
+            delete flush;
+        } else {
+            clearLocked(events);
+            startProcessLocked(flush, events);
+            // startProcessLocked() re-checks isActiveLocked()/isReady() and
+            // deletes + no-ops on failure; only claim ownership if it actually
+            // became the current process, otherwise the eventual release edge
+            // must not deactivate an unrelated running process.
+            if (currentProcess == flush) {
+                holdFlushProcess = flush;
+                events.push_back("controller:brew:start");
+                started = true;
+            }
         }
     }
+    dispatchEvents(events);
+    BrewHoldState expected = BrewHoldState::STARTING;
+    if (!started) {
+        brewHoldState.compare_exchange_strong(expected, BrewHoldState::IDLE);
+        return;
+    }
+    if (!brewHoldState.compare_exchange_strong(expected, BrewHoldState::FLUSHING)) {
+        // The release edge arrived while the flush was starting: honor it now
+        // instead of letting the flush run to the safety cap.
+        stopHoldFlush();
+    }
+}
+
+void Controller::stopHoldFlush() {
+    // End the hold-flush like the momentary stop path (deactivate + clear),
+    // but only while the hold still owns the current process. If the flush
+    // already ended (safety cap or natural expiry), deactivateLocked() nulled
+    // holdFlushProcess and this is a no-op, so a late release can never kill
+    // an unrelated process.
+    std::vector<const char *> events;
+    {
+        std::lock_guard<std::recursive_mutex> guard(processMutex);
+        if (holdFlushProcess == nullptr || currentProcess != holdFlushProcess) {
+            holdFlushProcess = nullptr;
+            return;
+        }
+        deactivateLocked(events);
+        clearLocked(events);
+    }
+    dispatchEvents(events);
 }
 
 void Controller::handleSteamButton(int steamButtonStatus) {
