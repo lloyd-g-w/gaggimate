@@ -20,7 +20,7 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         device_id TEXT NOT NULL, shot_id INTEGER NOT NULL, user_id TEXT NOT NULL,
         channel_id TEXT, step INTEGER NOT NULL DEFAULT 0, answered_mask INTEGER NOT NULL DEFAULT 0,
-        current_message_id TEXT, last_values TEXT NOT NULL DEFAULT '{}', saved_parts TEXT NOT NULL DEFAULT '[]',
+        current_message_id TEXT, last_values TEXT NOT NULL DEFAULT '{}', saved_parts TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL DEFAULT 'queued', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(device_id, shot_id, user_id),
         FOREIGN KEY(device_id, shot_id) REFERENCES shots(device_id, shot_id) ON DELETE CASCADE
@@ -64,8 +64,9 @@ export class Store {
     return row && fromDbWorkflow(row);
   }
   saveWorkflow(w: Workflow): void {
+    // `saved_parts` keeps its name for compatibility; it now holds the recorded patch object.
     this.db.prepare(`UPDATE workflows SET channel_id=?,step=?,answered_mask=?,current_message_id=?,last_values=?,saved_parts=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .run(w.channelId, w.step, w.answeredMask, w.currentMessageId, JSON.stringify(w.lastValues), JSON.stringify(w.savedParts), w.status, w.id);
+      .run(w.channelId, w.step, w.answeredMask, w.currentMessageId, JSON.stringify(w.lastValues), JSON.stringify(w.saved), w.status, w.id);
   }
   queuePatch(deviceId: string, shotId: number, patch: NotesPatch): number {
     const info = this.db.prepare("INSERT INTO feedback_events(device_id,shot_id,patch) VALUES(?,?,?)")
@@ -105,7 +106,10 @@ export class Store {
 
 type DbWorkflow = { id:number;device_id:string;shot_id:number;user_id:string;channel_id:string|null;step:number;answered_mask:number;current_message_id:string|null;last_values:string;saved_parts:string;status:Workflow["status"] };
 function fromDbWorkflow(r: DbWorkflow): Workflow {
+  // Rows written before the card redesign stored a string[] here; treat those as "nothing recorded".
+  const savedRaw=JSON.parse(r.saved_parts) as unknown;
+  const saved=savedRaw && typeof savedRaw === "object" && !Array.isArray(savedRaw) ? savedRaw as NotesPatch : {};
   return { id:r.id, deviceId:r.device_id, shotId:r.shot_id, userId:r.user_id, channelId:r.channel_id, step:r.step,
     answeredMask:r.answered_mask, currentMessageId:r.current_message_id, lastValues:JSON.parse(r.last_values) as NotesPatch,
-    savedParts:JSON.parse(r.saved_parts) as string[], status:r.status };
+    saved, status:r.status };
 }

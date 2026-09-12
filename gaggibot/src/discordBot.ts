@@ -1,19 +1,32 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, type Interaction, type Message, type MessageReaction, type PartialMessageReaction, type User, type PartialUser } from "discord.js";
 import type { Config } from "./config.js";
-import { actionFromCustomId, actionFromEmoji, applyFields, BUTTON_PREFIX, clipUnits, fieldsIn, normalizePatch, patchForReuse, savedPart, stepButtons, stepMessage, type StepAction, type StepButton } from "./flow.js";
+import { actionFromCustomId, actionFromEmoji, applyFields, BUTTON_PREFIX, clipUnits, COLOR_DONE, COLOR_IN_PROGRESS, fieldsIn, normalizePatch, patchForReuse, resultEmbed, stepButtons, stepEmbed, type Embed, type StepAction, type StepButton } from "./flow.js";
 import { parseReply, parseWithAi } from "./parser.js";
 import { STEPS, type NotesPatch, type ShotPayload, type Workflow } from "./types.js";
 import type { Store } from "./db.js";
 
 type Log = ReturnType<typeof import("./logger.js").logger>;
 
-export const TEST_MESSAGE = "\u{1F9EA} **Gaggibot test** \u2014 GaggiMate reached the bridge and the bot can DM you. Nothing was recorded; pull a shot for the real flow.";
+export const TEST_EMBED: Embed = {
+  title: "🧪 Gaggibot test",
+  description: "GaggiMate reached the bridge and the bot can DM you.\nTap the button to confirm taps reach the bot too. Nothing was recorded; pull a shot for the real flow.",
+  color: COLOR_IN_PROGRESS,
+  fields: []
+};
+const TEST_DONE_EMBED: Embed = {
+  title: "✅ Everything works",
+  description: "The bridge, DMs and buttons are all wired up. Pull a shot for the real flow.",
+  color: COLOR_DONE,
+  fields: []
+};
+
+/** What one card looks like on the wire: plain text and/or an embed. */
+export type CardBody = { content?: string; embed?: Embed };
 
 /** A message the bot "sent". In dry-run mode nothing leaves the process. */
-export type OutboxEntry = { seq: number; userId: string; channelId: string; messageId: string; content: string; buttons: {customId:string;label:string}[]; buttonsRemoved?: boolean; at: string };
+export type OutboxEntry = { seq: number; userId: string; channelId: string; messageId: string; content: string; embed?: Embed; buttons: {customId:string;label:string}[]; deleted?: boolean; at: string };
 
 const TEST_BUTTON_ID=`${BUTTON_PREFIX}test`;
-const TEST_DONE_MESSAGE="✅ **Buttons work too.** GaggiMate can reach the bridge, the bot can DM you, and you can answer with a tap. Nothing was recorded; pull a shot for the real flow.";
 
 export class DiscordBot {
   // The client is (re)created per login attempt: discord.js leaves a client in an unusable state
@@ -119,7 +132,7 @@ export class DiscordBot {
   async sendTestMessage():Promise<{userId:string;delivered:boolean;error?:string}[]> {
     const results:{userId:string;delivered:boolean;error?:string}[]=[];
     for (const userId of this.cfg.userIds) {
-      try { await this.deliver(userId,null,TEST_MESSAGE,[[{customId:TEST_BUTTON_ID,label:"✅ Tap to confirm buttons work",primary:true}]]); results.push({userId,delivered:true}); }
+      try { await this.deliver(userId,null,{embed:TEST_EMBED},[[{customId:TEST_BUTTON_ID,label:"✅ Tap to confirm buttons work",primary:true}]]); results.push({userId,delivered:true}); }
       catch(e) { results.push({userId,delivered:false,error:safeError(e)}); }
     }
     return results;
@@ -165,48 +178,44 @@ export class DiscordBot {
     if (!this.lock(w)) return;
     try {
       this.store.supersedeOtherWorkflows(w.userId,w.id);
-      // A superseded flow's prompt would otherwise keep live buttons that ack a tap and then do
-      // nothing (its message id no longer anchors any workflow). Retire them.
+      // A superseded flow's card would otherwise sit there with live buttons that ack a tap and then
+      // do nothing (its message id no longer anchors any workflow). Take it down.
       for (const old of this.store.listWorkflows(["superseded"])) {
         if (old.userId === w.userId && old.channelId && old.currentMessageId) {
-          void this.removeButtons(old.channelId, old.currentMessageId);
+          void this.retireCard(old.channelId, old.currentMessageId);
           old.currentMessageId=null; this.store.saveWorkflow(old);
         }
       }
       const payload=this.store.getShot(w.deviceId,w.shotId); if (!payload) throw new Error("shot missing");
       w.status="active";
-      const sent=await this.deliver(w.userId,w.channelId,this.summary(payload),[]);
-      w.channelId=sent.channelId;
       this.store.saveWorkflow(w);
+      // The card carries the shot summary itself, so there is no separate summary message.
       await this.sendStep(w);
     } catch(e) { this.log.warn("Could not start workflow; it remains queued",{workflow:w.id,error:safeError(e)}); w.status="queued"; this.store.saveWorkflow(w); }
     finally { this.unlock(w); }
   }
-  private summary(p:ShotPayload):string {
-    const s=p.shot;
-    return `☕ **Shot #${s.id} — ${s.profile || "Unknown profile"}**\n`+
-      `⏱ ${s.duration.toFixed(1)} s   ⚖️ ${s.weight.toFixed(1)} g   🌡️ ${s.temperature.toFixed(1)} °C   `+
-      `⏫ ${s.pressure.toFixed(1)} bar   💧 ${s.flow.toFixed(1)} ml/s\n`+
-      "Let's log it — tap the buttons under each prompt, or just reply.";
+  private shotFor(w:Workflow):ShotPayload {
+    const payload=this.store.getShot(w.deviceId,w.shotId); if (!payload) throw new Error("shot missing");
+    return payload;
   }
   private async sendStep(w:Workflow):Promise<void> {
     if (w.step >= STEPS.length) { await this.finish(w); return; }
-    const sent=await this.deliver(w.userId,w.channelId,stepMessage(w),stepButtons(w));
+    const sent=await this.deliver(w.userId,w.channelId,{embed:stepEmbed(w,this.shotFor(w))},stepButtons(w));
     w.channelId=sent.channelId; w.currentMessageId=sent.messageId; this.store.saveWorkflow(w);
   }
   /**
    * Single send path: real DM in production, in-memory outbox under dry-run. Buttons travel in the
-   * same request as the text, so a prompt is interactive the instant it appears (reactions had to be
+   * same request as the card, so a prompt is interactive the instant it appears (reactions had to be
    * added one REST call at a time and Discord rate-limits those to ~4/s).
    */
-  private async deliver(userId:string,channelId:string|null,content:string,buttons:StepButton[][]):Promise<{channelId:string;messageId:string}> {
+  private async deliver(userId:string,channelId:string|null,body:CardBody,buttons:StepButton[][]):Promise<{channelId:string;messageId:string}> {
     if (this.cfg.dryRun) {
       const channel=channelId ?? `dry-dm-${userId}`;
       const messageId=`dry-msg-${++this.outboxSeq}`;
       const flat=buttons.flat().map(b=>({customId:b.customId,label:b.label}));
-      this.outbox.push({seq:this.outboxSeq,userId,channelId:channel,messageId,content,buttons:flat,at:new Date().toISOString()});
+      this.outbox.push({seq:this.outboxSeq,userId,channelId:channel,messageId,content:body.content??"",embed:body.embed,buttons:flat,at:new Date().toISOString()});
       if (this.outbox.length>100) this.outbox.shift();
-      this.log.info("DRY RUN message",{to:userId,messageId,buttons:flat.map(b=>b.label),content});
+      this.log.info("DRY RUN message",{to:userId,messageId,buttons:flat.map(b=>b.label),title:body.embed?.title,content:body.content});
       return {channelId:channel,messageId};
     }
     const client=this.requireClient();
@@ -218,22 +227,26 @@ export class DiscordBot {
     if (!channel?.isSendable()) throw new Error("DM channel unavailable");
     const components=buttons.map(row=>new ActionRowBuilder<ButtonBuilder>().addComponents(
       row.map(b=>new ButtonBuilder().setCustomId(b.customId).setLabel(clipUnits(b.label,80)).setStyle(b.primary?ButtonStyle.Primary:ButtonStyle.Secondary))));
-    const message=await channel.send({content,components});
+    const message=await channel.send({...(body.content ? {content:body.content} : {}),...(body.embed ? {embeds:[body.embed]} : {}),components});
     return {channelId:channel.id,messageId:message.id};
   }
-  /** Remove the buttons from a prompt that has been answered, so a stale tap cannot happen. */
-  private async removeButtons(channelId:string,messageId:string):Promise<void> {
+  /**
+   * Take down a card that has been superseded by the next one, so the DM never fills up with old
+   * prompts: at any time there is exactly one bot card, at the bottom. (A bot cannot delete the
+   * user's own replies in a DM, so those stay.)
+   */
+  private async retireCard(channelId:string,messageId:string):Promise<void> {
     try {
-      if (this.cfg.dryRun) { const entry=this.outbox.find(m=>m.messageId===messageId); if (entry) { entry.buttons=[]; entry.buttonsRemoved=true; } return; }
+      if (this.cfg.dryRun) { const entry=this.outbox.find(m=>m.messageId===messageId); if (entry) { entry.buttons=[]; entry.deleted=true; } return; }
       const channel=await this.requireClient().channels.fetch(channelId);
       if (!channel?.isSendable()) return;
-      await channel.messages.edit(messageId,{components:[]});
-    } catch(e) { this.log.debug("Could not remove buttons from an answered prompt",{messageId,error:safeError(e)}); }
+      await channel.messages.delete(messageId);
+    } catch(e) { this.log.debug("Could not delete a superseded card",{messageId,error:safeError(e)}); }
   }
   private async onInteraction(interaction:Interaction):Promise<void> {
     if (!interaction.isButton()) return;
     if (interaction.customId === TEST_BUTTON_ID) {
-      try { await interaction.update({content:TEST_DONE_MESSAGE,components:[]}); }
+      try { await interaction.update({embeds:[TEST_DONE_EMBED],components:[]}); }
       catch(e) { this.log.warn("Could not acknowledge the test button",{error:safeError(e)}); }
       return;
     }
@@ -283,6 +296,7 @@ export class DiscordBot {
     }
     try {
       if (action.type === "rate") { if (w.step === 0) await this.applyPatch(w,{rating:action.value}); return; }
+      if (action.type === "taste") { if (STEPS[w.step] === "balanceTaste") await this.applyPatch(w,{balanceTaste:action.value}); return; }
       if (action.type === "reuse") { const patch=patchForReuse(w); if (patch) await this.applyPatch(w,patch); return; }
       await this.skip(w);
     } catch(e) { this.log.warn("Failed to handle action",{workflow:w.id,error:safeError(e)}); }
@@ -295,7 +309,7 @@ export class DiscordBot {
     for (const field of [...fields,...(clean.doseOut !== undefined ? ["doseOut" as const] : [])]) {
       const value=clean[field]; if (value === undefined) continue;
       this.store.queuePatch(w.deviceId,w.shotId,{[field]:value});
-      w.savedParts.push(savedPart(field,value));
+      (w.saved as Record<string,unknown>)[field]=value;
     }
     const result=applyFields(w,clean); this.store.saveWorkflow(w);
     if (result.answeredCurrent) await this.advance(w,result.next);
@@ -304,19 +318,20 @@ export class DiscordBot {
     let next=w.step+1; while (next<STEPS.length && (w.answeredMask&(1<<next))) next++;
     await this.advance(w,next);
   }
-  /** Move to `next`, send its prompt, then retire the answered prompt's buttons. */
+  /** Move to `next`, send its card, then take down the answered card. */
   private async advance(w:Workflow,next:number):Promise<void> {
-    const answeredPrompt=w.currentMessageId;
+    const answeredCard=w.currentMessageId;
     w.step=next; w.currentMessageId=null; this.store.saveWorkflow(w);
     await this.sendStep(w);
-    // Only once the next prompt is out: if that send failed, a stale prompt with live buttons is
-    // still better than one with none until the reconcile timer re-sends it.
-    if (answeredPrompt && w.channelId) void this.removeButtons(w.channelId,answeredPrompt);
+    // Only once the next card is out: if that send failed, the old card (with live buttons) is
+    // still better than nothing until the reconcile timer re-sends it.
+    if (answeredCard && w.channelId) void this.retireCard(w.channelId,answeredCard);
   }
   private async finish(w:Workflow):Promise<void> {
-    const recap=w.savedParts.length ? w.savedParts.join(", ") : "nothing recorded";
-    const sent=await this.deliver(w.userId,w.channelId,`✅ Shot #${w.shotId} logged: ${recap.slice(0,1900)}.`,[]);
+    const lastCard=w.currentMessageId;
+    const sent=await this.deliver(w.userId,w.channelId,{embed:resultEmbed(w,this.shotFor(w))},[]);
     w.channelId=sent.channelId; w.status="done"; w.currentMessageId=null; this.store.saveWorkflow(w);
+    if (lastCard && w.channelId) void this.retireCard(w.channelId,lastCard);
   }
   private async consumeExistingReaction(w:Workflow):Promise<void> {
     if (this.cfg.dryRun || !w.channelId || !w.currentMessageId) return;

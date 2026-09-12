@@ -3,7 +3,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
-import { actionFromCustomId } from "./flow.js";
+import { actionFromCustomId, asTaste } from "./flow.js";
 import type { Config } from "./config.js";
 import type { DiscordBot } from "./discordBot.js";
 import type { Store } from "./db.js";
@@ -32,11 +32,12 @@ export const cleanPrevious=(value:unknown):Record<string,unknown>=>{
   const doseOut=asDose(src.doseOut,500); if(doseOut!==undefined)out.doseOut=doseOut;
   const grind=asText(src.grindSetting,100); if(grind!==undefined)out.grindSetting=grind;
   const bean=asText(src.beanType,200); if(bean!==undefined)out.beanType=bean;
+  const taste=asTaste(src.balanceTaste); if(taste!==undefined)out.balanceTaste=taste;
   const notes=asText(src.notes,1500); if(notes!==undefined)out.notes=notes;
   return out;
 };
 
-const priorNotes=z.object({rating:z.number().int().min(1).max(5).optional(),grindSetting:priorText.optional(),doseIn:z.number().finite().min(0).max(200).optional(),doseOut:z.number().finite().min(0).max(500).optional(),beanType:priorText.optional(),notes:priorText.optional()}).strict();
+const priorNotes=z.object({rating:z.number().int().min(1).max(5).optional(),grindSetting:priorText.optional(),doseIn:z.number().finite().min(0).max(200).optional(),doseOut:z.number().finite().min(0).max(500).optional(),beanType:priorText.optional(),balanceTaste:z.enum(["sour","balanced","bitter"]).optional(),notes:priorText.optional()}).strict();
 const shotSchema=z.object({
   deviceId:z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/),
   shot:z.object({id:z.number().int().nonnegative().max(0xffffffff),profile:text,duration:z.number().finite().min(0).max(3600),weight:z.number().finite().min(-100).max(1000),temperature:z.number().finite().min(0).max(200),pressure:z.number().finite().min(0).max(30),flow:z.number().finite().min(0).max(100)}).strict(),
@@ -133,7 +134,7 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
         res.status(202).json({accepted:true,messageId:workflow.currentMessageId,step:workflow.step});
       } catch(e){next(e);}
     });
-    app.get("/api/v1/_dev/state",(_req,res)=>res.json({workflows:store.listWorkflows(["queued","active"]).map(w=>({id:w.id,userId:w.userId,shotId:w.shotId,step:w.step,status:w.status,answeredMask:w.answeredMask,savedParts:w.savedParts,currentMessageId:w.currentMessageId}))}));
+    app.get("/api/v1/_dev/state",(_req,res)=>res.json({workflows:store.listWorkflows(["queued","active"]).map(w=>({id:w.id,userId:w.userId,shotId:w.shotId,step:w.step,status:w.status,answeredMask:w.answeredMask,saved:w.saved,currentMessageId:w.currentMessageId}))}));
   }
   app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{
     if(err instanceof z.ZodError)return res.status(400).json({error:"invalid_request",issues:err.issues.map(i=>({path:i.path.join("."),message:i.message}))});

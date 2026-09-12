@@ -33,24 +33,53 @@ say "2. Test button endpoint (sends the test DM / records it in dry run)"
 api POST /api/v1/test; echo
 
 say "3. Upload a shot (this is what the display does after every shot)"
-api POST /api/v1/shots '{"deviceId":"machine","shot":{"id":224,"profile":"Direct Lever","duration":28.4,"weight":36.2,"temperature":93,"pressure":9.1,"flow":1.8},"previous":{"rating":3,"grindSetting":"3.5","doseIn":"18.0","beanType":"Ethiopia Guji","notes":"previous note"}}'; echo
+api POST /api/v1/shots '{"deviceId":"machine","shot":{"id":224,"profile":"Direct Lever","duration":28.4,"weight":36.2,"temperature":93,"pressure":9.1,"flow":1.8},"previous":{"rating":3,"grindSetting":"3.5","doseIn":"18.0","beanType":"Ethiopia Guji","balanceTaste":"balanced","notes":"previous note"}}'; echo
 sleep 0.5
 
 say "4. Messages the bot would have sent"
 api GET /api/v1/_dev/outbox | python3 -c 'import json,sys
 for m in json.load(sys.stdin)["messages"]:
-    print("---"); print(m["content"]); print("buttons:", " | ".join(b["label"] for b in m["buttons"]) or "(none)")'
+    if m.get("deleted"): print("--- (deleted: " + (m.get("embed") or {}).get("title","") + ")"); continue
+    print("┌" + "─"*70)
+    e=m.get("embed")
+    if e:
+        print("│ " + e["title"])
+        if e.get("description"): print("│ " + e["description"])
+        for f in e["fields"]:
+            print("│")
+            print("│ " + f["name"])
+            for line in f["value"].split("\n"): print("│   " + line)
+        if e.get("footer"): print("│"); print("│ " + e["footer"]["text"])
+    elif m["content"]: print("│ " + m["content"])
+    print("└" + "─"*70)
+    if m["buttons"]: print("  [ " + " ]  [ ".join(b["label"] for b in m["buttons"]) + " ]")'
 
-say "5. Answer: tap the 4 button, then reply with the remaining steps"
+say "5. Answer: tap 4, reply grind/dose/bean, tap a taste, reply a note"
 api POST /api/v1/_dev/press '{"customId":"gm:rate:4"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"3.2"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"18"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"Ethiopia Guji"}' >/dev/null; sleep 0.3
+api POST /api/v1/_dev/press '{"customId":"gm:taste:balanced"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"bright, a bit sour"}' >/dev/null; sleep 0.5
 
-say "6. Final messages (recap last)"
+say "6. What is left in the DM (every earlier card was deleted; only the result card remains)"
 api GET /api/v1/_dev/outbox | python3 -c 'import json,sys
-for m in json.load(sys.stdin)["messages"][-3:]: print("---"); print(m["content"])'
+for m in json.load(sys.stdin)["messages"][-2:]:
+    if m.get("deleted"): print("--- (deleted: " + (m.get("embed") or {}).get("title","") + ")"); continue
+    print("┌" + "─"*70)
+    e=m.get("embed")
+    if e:
+        print("│ " + e["title"])
+        if e.get("description"): print("│ " + e["description"])
+        for f in e["fields"]:
+            print("│")
+            print("│ " + f["name"])
+            for line in f["value"].split("\n"): print("│   " + line)
+        if e.get("footer"): print("│"); print("│ " + e["footer"]["text"])
+    elif m["content"]: print("│ " + m["content"])
+    print("└" + "─"*70)
+    if m["buttons"]: print("  [ " + " ]  [ ".join(b["label"] for b in m["buttons"]) + " ]")'
+
 
 say "7. Feedback the display polls for (one event per answered field)"
 EVENTS=$(api GET "/api/v1/feedback/machine?after=0"); echo "${EVENTS}"

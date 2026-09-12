@@ -125,9 +125,10 @@ The same check from a shell, against the container: `POST /api/v1/test` with the
 
 ## 3. Using it
 
-Feedback is collected **one field at a time**, each in its own message, in this order:
-**rating → grind → dose in → bean → note**. About 10 s after a shot is saved you get the summary,
-immediately followed by the first step.
+Feedback is collected **one field at a time**, in this order:
+**rating → grind → dose in → bean → balance / taste → note** (balance / taste is Gaggibot mode
+only). In Gaggibot mode you get a single card within a couple of seconds of the shot; in direct
+mode a summary message about 10 s after it, followed by the first step.
 
 ### 3.1 The summary
 
@@ -141,23 +142,32 @@ Let's log it — answer each step, ↩️ reuses your last shot's value, ➡️ 
 
 ### 3.2 The steps
 
-Every step message shows what you entered for your **previous shot** (if anything) and already
-carries the controls you need. In **Gaggibot** mode they are **buttons** under the prompt, present
-the instant it appears; in direct mode they are reactions the display adds one at a time (Discord
-rate-limits those, so they trickle in over a second or two).
+Every step shows what you entered for your **previous shot** (if anything) and already carries the
+controls you need.
+
+**Gaggibot mode** sends one **card** that contains the shot summary, the current step and what has
+been recorded so far, with **buttons** underneath — interactive the instant it appears. When you
+answer, the next card replaces it (the old one is deleted, so the DM never fills up with prompts;
+your own replies stay). The last card becomes a result card with every field laid out.
 
 ```
-Shot #142 · step 1/5
-# Rate this shot
-
-Your last shot was rated *3/5*.
-
-Tap 1–5 below or send a number from *1 to 5*.
-
--# 1–5 to rate · ↩️ to reuse *3/5* · ➡️ to skip
-[ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
-[ ↩️ Reuse 3/5 ] [ ➡️ Skip ]
+┌──────────────────────────────────────────────────────────
+│ ☕ Shot #142  ·  Classic
+│ ⏱ 28.4 s  ·  ⚖️ 36.2 g  ·  🌡️ 93.0 °C  ·  ⏫ 9.1 bar  ·  💧 1.8 ml/s
+│
+│ Step 1 of 6 — Rate this shot
+│   Your last shot was rated *3/5*.
+│   Tap **1–5** below or send a number from *1 to 5*.
+│   1–5 to rate · ↩️ to reuse *3/5* · ➡️ to skip
+│
+│ Tap a button or just reply · every answer is saved immediately
+└──────────────────────────────────────────────────────────
+  [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]   [ ↩️ Reuse 3/5 ] [ ➡️ Skip ]
 ```
+
+**Direct mode** sends a plain message per step with reactions the display adds one at a time
+(Discord rate-limits those, so they trickle in over a second or two), and has no balance / taste
+step.
 
 | Step | Answer by text | Controls (Gaggibot buttons / direct-mode reactions) |
 |---|---|---|
@@ -165,6 +175,7 @@ Tap 1–5 below or send a number from *1 to 5*.
 | **Grind** | e.g. `3.5` | ↩️ (if a last value exists) ➡️ |
 | **Dose in** | e.g. `18` | ↩️ ➡️ |
 | **Bean** | e.g. `Ethiopia Guji` | ↩️ ➡️ |
+| **Balance / taste** (Gaggibot only) | `sour`, `balanced` or `bitter` | **🍋 Sour · ⚖️ Balanced · 🍫 Bitter** (last choice highlighted), ➡️ |
 | **Note** | free text | ➡️ (notes are never reused) |
 
 - **↩️ reuse** saves your previous shot's value for this field and moves on.
@@ -174,8 +185,10 @@ Tap 1–5 below or send a number from *1 to 5*.
 - In Gaggibot mode an answered prompt loses its buttons once the next prompt is out, so a late
   tap on an old message does nothing. Manually added reactions still work there too.
 
-After the last step the bot sends a recap, e.g. `✅ Shot #142 logged: rating 4, grind 3.5, in 18.0 g, bean Ethiopia Guji, note.`
-Each field is saved the moment you answer it, so you can stop halfway and keep what you entered.
+After the last step you get a result: in Gaggibot mode a green card with every field (rating as
+stars, grind, dose in, yield with the brew ratio, bean, balance, notes; skipped fields show `—`),
+in direct mode a one-line recap. Each field is saved the moment you answer it, so you can stop
+halfway and keep what you entered.
 
 ### 3.3 Answering more than one field at once
 
@@ -190,6 +203,7 @@ case-insensitive:
 | `in`, `dose`, `dosein` | doseIn (g) |
 | `out`, `yield`, `doseout` | doseOut (g) — optional, the scale already provides yield |
 | `bean`, `beans`, `coffee` | beanType |
+| `balance`, `taste` | balanceTaste — `sour`, `balanced` or `bitter` (Gaggibot mode) |
 | `note`, `notes` | notes |
 
 Text without a key is the answer to the step being asked (on the note step, or a non-numeric
@@ -221,8 +235,12 @@ Exactly the shot-notes document the web UI edits (see [shot-notes-api.md](shot-n
 
 ```json
 { "rating": 4, "grindSetting": "3.5", "doseIn": "18.0", "doseOut": "36.2",
-  "ratio": "2.01", "beanType": "Ethiopia Guji", "notes": "bright, a bit sour" }
+  "ratio": "2.01", "beanType": "Ethiopia Guji", "balanceTaste": "balanced",
+  "notes": "bright, a bit sour" }
 ```
+
+`balanceTaste` is the same field as the web UI's **Balance/Taste** select (`sour` / `balanced` /
+`bitter`).
 
 Only the keys you mention are overwritten; existing notes are kept. The shot index entry's
 `rating` (and `volume` when `doseOut` is given) is updated the same way the web UI does it.

@@ -1,5 +1,7 @@
-export const STEPS = ["rating", "grindSetting", "doseIn", "beanType", "notes"] as const;
+export const STEPS = ["rating", "grindSetting", "doseIn", "beanType", "balanceTaste", "notes"] as const;
 export type Step = (typeof STEPS)[number];
+export const TASTES = ["sour", "balanced", "bitter"] as const;
+export type Taste = (typeof TASTES)[number];
 export type NotesPatch = Partial<{
   rating: number;
   grindSetting: string;
@@ -8,6 +10,7 @@ export type NotesPatch = Partial<{
   doseIn: number | string;
   doseOut: number | string;
   beanType: string;
+  balanceTaste: Taste;
   notes: string;
 }>;
 export type ShotPayload = {
@@ -33,6 +36,7 @@ export type Workflow = {
   answeredMask: number;
   currentMessageId: string | null;
   lastValues: NotesPatch;
-  savedParts: string[];
+  /** Everything recorded for this shot so far (wire form), rendered on every card and the result. */
+  saved: NotesPatch;
   status: "queued" | "active" | "done" | "superseded";
 };

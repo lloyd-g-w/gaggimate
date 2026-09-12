@@ -179,40 +179,67 @@ In bridge mode the display makes only two kinds of small HTTP requests: it uploa
 
 ## Discord flow
 
-Gaggibot sends a shot summary, then **rating → grind → dose in → bean → note**, one prompt per
-step. Each prompt carries its controls as **buttons**, so it is interactive the instant it appears:
+Gaggibot keeps the DM tidy: at any moment there is **one card** from the bot, at the bottom, and it
+carries everything — the shot summary, the current step, and what has been recorded so far. When
+you answer, the next card is sent and the previous one is **deleted** (your own replies stay; a bot
+cannot delete those in a DM). At the end the last card is replaced by a **result card**.
+
+Steps, in order: **rating → grind → dose in → bean → balance / taste → note**.
+
+```
+┌──────────────────────────────────────────────────────────────────
+│ ☕ Shot #224  ·  Direct Lever
+│ ⏱ 28.4 s  ·  ⚖️ 36.2 g  ·  🌡️ 93.0 °C  ·  ⏫ 9.1 bar  ·  💧 1.8 ml/s
+│
+│ Step 2 of 6 — Grind
+│   Your last shot was *3.5*.
+│   Send the grind setting for this shot, e.g. **3.5**
+│   1–5 to rate · ↩️ to reuse *3.5* · ➡️ to skip
+│
+│ Recorded so far
+│   ⭐ 4/5
+│
+│ Tap a button or just reply · every answer is saved immediately
+└──────────────────────────────────────────────────────────────────
+  [ ↩️ Reuse 3.5 ]  [ ➡️ Skip ]
+```
 
 | Step | Buttons |
 |---|---|
 | Rate this shot | **1 2 3 4 5**, **↩️ Reuse *n*/5** (if the last shot was rated), **➡️ Skip** |
 | Grind / Dose in / Bean | **↩️ Reuse *value*** (if the last shot has one), **➡️ Skip** |
+| Balance / taste | **🍋 Sour · ⚖️ Balanced · 🍫 Bitter** (your last choice highlighted), **➡️ Skip** |
 | Note | **➡️ Skip** (notes are never reused) |
 
+The result card lays everything out; skipped fields show `—`, and the yield line adds the brew
+ratio when the dose in is known:
+
 ```
--# Shot #224 · step 1/5
-# Rate this shot
-
-Your last shot was rated *3/5*.
-
-Tap 1–5 below or send a number from *1 to 5*.
-
--# 1–5 to rate · ↩️ to reuse *3/5* · ➡️ to skip
-[ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
-[ ↩️ Reuse 3/5 ] [ ➡️ Skip ]
+┌──────────────────────────────────────────────────────────────────
+│ ✅ Shot #224  ·  Direct Lever
+│ ⏱ 28.4 s  ·  ⚖️ 36.2 g  ·  🌡️ 93.0 °C  ·  ⏫ 9.1 bar  ·  💧 1.8 ml/s
+│
+│ ⭐ Rating        🔧 Grind        ⚖️ Dose in
+│   ★★★★☆  4/5     3.2             18 g
+│ ☕ Yield                         🫘 Bean          👅 Balance
+│   36.2 g  ·  1 : 2.0             Ethiopia Guji    ⚖️ Balanced
+│ 📝 Notes
+│   bright, a bit sour
+│
+│ Saved to shot history
+└──────────────────────────────────────────────────────────────────
 ```
 
-- A tap or a text reply advances immediately; the answered prompt's buttons are retired once the
-  next prompt is out, so a stale tap cannot land.
+- A tap or a text reply advances immediately.
 - ↩️ saves the shown previous value; ➡️ skips without writing anything.
-- `key: value` fields separated by lines or `|` can answer several steps at once.
+- `key: value` fields separated by lines or `|` can answer several steps at once
+  (`rating`, `grind`, `in`, `out`, `bean`, `balance`/`taste`, `note`).
 - Optional AI mode parses natural language and falls back to the deterministic parser.
 - Manually added reactions (1️⃣–5️⃣, ↩️, ➡️) still work, mapped onto the same actions.
 
 Why buttons rather than reactions: Discord rate-limits adding reactions to roughly one per 250 ms
 per channel, so a rating prompt's six reactions trickled in over 1.5 s+ after every message.
 Buttons are part of the message itself — no extra requests, no rate limit.
-
-Every answer is queued before the next prompt is sent. A newer shot supersedes an unfinished workflow for the same Discord user; fields already queued from the older shot remain available to GaggiMate.
 
 ## Development
 

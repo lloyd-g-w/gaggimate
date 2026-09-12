@@ -12,7 +12,11 @@ import type { Config } from "../src/config.js";
  * dev endpoints. This exercises the real state machine, the real SQLite store and the real HTTP API.
  */
 const TOKEN="0123456789abcdef0123456789abcdef";
-type Msg={content:string;buttons:{customId:string;label:string}[];buttonsRemoved?:boolean;messageId:string};
+type Embed={title:string;description?:string;fields:{name:string;value:string}[];footer?:{text:string}};
+type Msg={content:string;embed?:Embed;buttons:{customId:string;label:string}[];deleted?:boolean;messageId:string};
+// Everything visible on a card, flattened, so tests can grep it like the old plain-text prompts.
+const text=(m:Msg)=>[m.content,m.embed?.title,m.embed?.description,...(m.embed?.fields.flatMap(f=>[f.name,f.value])??[]),m.embed?.footer?.text].filter(Boolean).join("\n");
+const isStep=(m:Msg)=>/Step \d+ of \d+/.test(text(m));
 const labels=(m:Msg)=>m.buttons.map(b=>b.label);
 const ids=(m:Msg)=>m.buttons.map(b=>b.customId);
 const USER="100000000000000000";
@@ -47,12 +51,12 @@ describe("gaggibot conversation (dry run)",()=>{
       await flush();
 
       let messages=await h.outbox();
-      expect(messages).toHaveLength(2); // summary + step 1
-      expect(messages[0]!.content).toContain("Shot #224");
-      expect(messages[1]!.content).toContain("Rate this shot");
-      // Buttons arrive with the prompt itself: 1-5 plus skip (no previous rating, so no reuse).
-      expect(ids(messages[1]!)).toEqual(["gm:rate:1","gm:rate:2","gm:rate:3","gm:rate:4","gm:rate:5","gm:skip"]);
-      expect(messages[1]!.content).toContain("Tap 1–5 below or send a number from *1 to 5*.");
+      expect(messages).toHaveLength(1); // one card: summary + step 1 together
+      expect(text(messages[0]!)).toContain("Shot #224");
+      expect(text(messages[0]!)).toContain("Step 1 of 6 — Rate this shot");
+      // Buttons arrive with the card itself: 1-5 plus skip (no previous rating, so no reuse).
+      expect(ids(messages[0]!)).toEqual(["gm:rate:1","gm:rate:2","gm:rate:3","gm:rate:4","gm:rate:5","gm:skip"]);
+      expect(text(messages[0]!)).toContain("Tap **1–5** below or send a number from *1 to 5*.");
 
       // Rate by tapping a button, then answer the rest by text.
       expect((await h.call("/api/v1/_dev/press",{customId:"gm:rate:4"})).status).toBe(202);
@@ -63,19 +67,31 @@ describe("gaggibot conversation (dry run)",()=>{
       await flush();
       await h.call("/api/v1/_dev/reply",{text:"Ethiopia Guji"});// bean
       await flush();
+      await h.call("/api/v1/_dev/press",{customId:"gm:taste:sour"}); // balance / taste
+      await flush();
       await h.call("/api/v1/_dev/reply",{text:"bright, a bit sour"});
       await flush();
 
       messages=await h.outbox();
-      const prompts=messages.filter(m=>m.content.includes("· step "));
-      expect(prompts.map(p=>p.content.split("\n")[1])).toEqual(["# Rate this shot","# Grind","# Dose in","# Bean","# Note"]);
-      expect(messages.at(-1)!.content).toContain("✅ Shot #224 logged");
-      // Every answered prompt had its buttons retired once the next prompt was out.
-      for (const p of prompts.slice(0,-1)) expect(p.buttonsRemoved).toBe(true);
+      const cards=messages.filter(isStep);
+      expect(cards.map(c=>c.embed!.fields[0]!.name)).toEqual([
+        "Step 1 of 6 — Rate this shot","Step 2 of 6 — Grind","Step 3 of 6 — Dose in","Step 4 of 6 — Bean","Step 5 of 6 — Balance / taste","Step 6 of 6 — Note"
+      ]);
+      // Every card was deleted once its successor was out, so only the result remains.
+      for (const c of cards) expect(c.deleted).toBe(true);
+      const result=messages.at(-1)!;
+      expect(result.deleted).toBeUndefined();
+      expect(result.embed!.title).toBe("✅ Shot #224  ·  Direct Lever");
+      const byName=Object.fromEntries(result.embed!.fields.map(f=>[f.name,f.value]));
+      expect(byName["⭐ Rating"]).toBe("★★★★☆  4/5");
+      expect(byName["👅 Balance"]).toBe("🍋 Sour");
+      expect(byName["📝 Notes"]).toBe("bright, a bit sour");
+      // The "recorded so far" line accumulated as the flow progressed.
+      expect(text(cards[5]!)).toContain("⭐ 4/5  ·  🔧 3.2  ·  ⚖️ 18 g  ·  🫘 Ethiopia Guji  ·  👅 🍋 Sour");
       // Doses are queued as strings so the display recomputes ratio and index volume.
       const events=await (await h.call("/api/v1/feedback/machine?after=0")).json() as {events:{patch:Record<string,unknown>}[];through:number};
       expect(events.events.map(e=>e.patch)).toEqual([
-        {rating:4},{grindSetting:"3.2"},{doseIn:"18"},{beanType:"Ethiopia Guji"},{notes:"bright, a bit sour"}
+        {rating:4},{grindSetting:"3.2"},{doseIn:"18"},{beanType:"Ethiopia Guji"},{balanceTaste:"sour"},{notes:"bright, a bit sour"}
       ]);
       expect(events.through).toBe(0);
 
@@ -97,10 +113,10 @@ describe("gaggibot conversation (dry run)",()=>{
       await h.call("/api/v1/_dev/press",{customId:"gm:skip"}); // skip rating
       await flush();
 
-      const prompts=(await h.outbox()).filter(m=>m.content.includes("· step "));
-      const grind=prompts.at(-1)!;
-      expect(grind.content).toContain("# Grind");
-      expect(grind.content).toContain("Your last shot was *3.5*");   // previous value shown
+      const cards=(await h.outbox()).filter(isStep);
+      const grind=cards.at(-1)!;
+      expect(text(grind)).toContain("Step 2 of 6 — Grind");
+      expect(text(grind)).toContain("Your last shot was *3.5*");   // previous value shown
       expect(labels(grind)).toEqual(["↩️ Reuse 3.5","➡️ Skip"]);      // reuse + skip, no rating buttons
 
       await h.call("/api/v1/_dev/press",{customId:"gm:reuse"});
@@ -118,9 +134,9 @@ describe("gaggibot conversation (dry run)",()=>{
       await h.bot.start();
       await h.call("/api/v1/shots",shot(310,{rating:1}));
       await flush();
-      const rating=(await h.outbox()).filter(m=>m.content.includes("· step ")).at(-1)!;
-      expect(rating.content).toContain("Your last shot was rated *1/5*.");
-      expect(rating.content).toContain("-# 1–5 to rate · ↩️ to reuse *1/5* · ➡️ to skip");
+      const rating=(await h.outbox()).filter(isStep).at(-1)!;
+      expect(text(rating)).toContain("Your last shot was rated *1/5*.");
+      expect(text(rating)).toContain("*1–5 to rate · ↩️ to reuse *1/5* · ➡️ to skip*");
       expect(labels(rating)).toEqual(["1","2","3","4","5","↩️ Reuse 1/5","➡️ Skip"]);
 
       await h.call("/api/v1/_dev/press",{customId:"gm:reuse"});
@@ -128,7 +144,7 @@ describe("gaggibot conversation (dry run)",()=>{
       const events=await (await h.call("/api/v1/feedback/machine?after=0")).json() as {events:{patch:Record<string,unknown>}[]};
       expect(events.events.map(e=>e.patch)).toEqual([{rating:1}]);
       // and the flow moved on to grind
-      expect((await h.outbox()).filter(m=>m.content.includes("· step ")).at(-1)!.content).toContain("# Grind");
+      expect(text((await h.outbox()).filter(isStep).at(-1)!)).toContain("Step 2 of 6 — Grind");
     } finally { h.server.close(); await h.bot.stop(); }
   });
 
@@ -149,11 +165,11 @@ describe("gaggibot conversation (dry run)",()=>{
     const h=harness();
     try {
       await h.bot.start();
-      await h.call("/api/v1/shots",shot(400,{rating:5,grindSetting:"2",doseIn:"18.0",beanType:"Guji",notes:"a previous note"}));
+      await h.call("/api/v1/shots",shot(400,{rating:5,grindSetting:"2",doseIn:"18.0",beanType:"Guji",balanceTaste:"bitter",notes:"a previous note"}));
       await flush();
-      for (const _ of [0,1,2,3]) { await h.call("/api/v1/_dev/press",{customId:"gm:skip"}); await flush(); }
-      const note=(await h.outbox()).filter(m=>m.content.includes("· step ")).at(-1)!;
-      expect(note.content).toContain("# Note");
+      for (const _ of [0,1,2,3,4]) { await h.call("/api/v1/_dev/press",{customId:"gm:skip"}); await flush(); }
+      const note=(await h.outbox()).filter(isStep).at(-1)!;
+      expect(text(note)).toContain("Step 6 of 6 — Note");
       expect(labels(note)).toEqual(["➡️ Skip"]);
     } finally { h.server.close(); await h.bot.stop(); }
   });
@@ -166,13 +182,13 @@ describe("gaggibot conversation (dry run)",()=>{
       await flush();
       await h.call("/api/v1/_dev/reply",{text:"rating: 5 | in: 18\nbean: Kenya AA"});
       await flush();
-      const prompts=(await h.outbox()).filter(m=>m.content.includes("· step "));
-      // rating and dose in are answered, so the next prompt is grind, then bean is skipped after it.
-      expect(prompts.at(-1)!.content).toContain("# Grind");
+      const cards=(await h.outbox()).filter(isStep);
+      // rating and dose in are answered, so the next card is grind, then bean is skipped after it.
+      expect(text(cards.at(-1)!)).toContain("Step 2 of 6 — Grind");
       await h.call("/api/v1/_dev/reply",{text:"3.1"});
       await flush();
-      const after=(await h.outbox()).filter(m=>m.content.includes("· step "));
-      expect(after.at(-1)!.content).toContain("# Note");
+      const after=(await h.outbox()).filter(isStep);
+      expect(text(after.at(-1)!)).toContain("Step 5 of 6 — Balance / taste");
     } finally { h.server.close(); await h.bot.stop(); }
   });
 
@@ -186,12 +202,12 @@ describe("gaggibot conversation (dry run)",()=>{
       await flush();
       const state=await (await h.call("/api/v1/_dev/state")).json() as {workflows:{shotId:number;status:string}[]};
       expect(state.workflows.map(w=>w.shotId)).toEqual([601]); // the older flow is superseded, not doubled
-      // The superseded prompt's buttons were retired, so a stale tap can't ack-and-do-nothing.
-      const prompts=(await h.outbox()).filter(m=>m.content.includes("· step "));
-      expect(prompts[0]!.content).toContain("Shot #600");
-      expect(prompts[0]!.buttonsRemoved).toBe(true);
-      expect(prompts.at(-1)!.content).toContain("Shot #601");
-      expect(prompts.at(-1)!.buttons.length).toBeGreaterThan(0);
+      // The superseded card was taken down, so a stale tap can't ack-and-do-nothing.
+      const cards=(await h.outbox()).filter(isStep);
+      expect(text(cards[0]!)).toContain("Shot #600");
+      expect(cards[0]!.deleted).toBe(true);
+      expect(text(cards.at(-1)!)).toContain("Shot #601");
+      expect(cards.at(-1)!.buttons.length).toBeGreaterThan(0);
     } finally { h.server.close(); await h.bot.stop(); }
   });
 
@@ -216,7 +232,7 @@ describe("gaggibot conversation (dry run)",()=>{
       expect(body.results).toEqual([{userId:USER,delivered:true}]);
       const messages=await h.outbox();
       expect(messages).toHaveLength(1);
-      expect(messages[0]!.content).toContain("Gaggibot test");
+      expect(messages[0]!.embed!.title).toContain("Gaggibot test");
       // The button proves interactions reach the bot, which is how every real step is answered.
       expect(ids(messages[0]!)).toEqual(["gm:test"]);
       // A test must never be recorded as shot feedback.

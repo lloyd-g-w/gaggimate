@@ -1,11 +1,13 @@
+import { asTaste } from "./flow.js";
 import type { NotesPatch, Step } from "./types.js";
 
 const aliases: Record<string, keyof NotesPatch> = {
   rating:"rating", rate:"rating", stars:"rating", grind:"grindSetting", grinder:"grindSetting",
   in:"doseIn", dose:"doseIn", dosein:"doseIn", out:"doseOut", yield:"doseOut", doseout:"doseOut",
-  bean:"beanType", beans:"beanType", coffee:"beanType", note:"notes", notes:"notes"
+  bean:"beanType", beans:"beanType", coffee:"beanType", balance:"balanceTaste", taste:"balanceTaste", balancetaste:"balanceTaste",
+  note:"notes", notes:"notes"
 };
-const limits: Record<keyof NotesPatch, number> = { rating:1, grindSetting:100, doseIn:1, doseOut:1, beanType:200, notes:1500 };
+const limits: Record<keyof NotesPatch, number> = { rating:1, grindSetting:100, doseIn:1, doseOut:1, beanType:200, balanceTaste:8, notes:1500 };
 
 export function parseReply(raw: string, current: Step): NotesPatch {
   const clean = raw.replace(/```|`/g, "").trim().slice(0, 2000);
@@ -21,9 +23,10 @@ export function parseReply(raw: string, current: Step): NotesPatch {
   if (!keyed && clean && !placeholder(clean)) {
     // A bare answer belongs to the field being asked. On the rating step a digit 1-5 is the rating;
     // free text there is a note and the rating question stays open (mirrors the display).
-    if (current === "rating") {
-      assign(patch, "rating", clean);
-      if (patch.rating === undefined) assign(patch, "notes", clean);
+    if (current === "rating" || current === "balanceTaste") {
+      // Steps with a fixed set of answers: a matching answer fills the step, anything else is a note.
+      assign(patch, current, clean);
+      if (patch[current] === undefined) assign(patch, "notes", clean);
     } else {
       assign(patch, current, clean);
     }
@@ -34,6 +37,7 @@ export function parseReply(raw: string, current: Step): NotesPatch {
 function assign(p: NotesPatch, key: keyof NotesPatch, raw: string): void {
   const rawValue = raw.trim();
   if (key === "rating") { const n = Number(rawValue); if (Number.isInteger(n) && n >= 1 && n <= 5) p.rating = n; }
+  else if (key === "balanceTaste") { const t = asTaste(rawValue); if (t) p.balanceTaste = t; }
   else if (key === "doseIn" || key === "doseOut") { const n=Number(rawValue); if (Number.isFinite(n) && n >= 0 && n <= (key === "doseIn" ? 200 : 500)) p[key]=n; }
   else p[key] = rawValue.slice(0, limits[key]) as never;
 }
@@ -58,7 +62,7 @@ async function requestAi(raw: string, current: Step, cfg: {url:string;key:string
     const response = await fetch(cfg.url, { method:"POST", signal:controller.signal,
       headers:{"content-type":"application/json", ...(cfg.key ? {authorization:`Bearer ${cfg.key}`} : {})},
       body:JSON.stringify({model:cfg.model,temperature:0,...(jsonMode?{response_format:{type:"json_object"}}:{}),messages:[
-        {role:"system",content:`Extract espresso feedback as JSON using only rating (integer 1-5), grindSetting (string), doseIn/doseOut (number), beanType, notes. Field being asked: ${current}. Omit unknown fields.`},
+        {role:"system",content:`Extract espresso feedback as JSON using only rating (integer 1-5), grindSetting (string), doseIn/doseOut (number), beanType (string), balanceTaste (one of "sour", "balanced", "bitter"), notes (string). Field being asked: ${current}. Omit unknown fields.`},
         {role:"user",content:raw.slice(0,2000)}]}) });
     if (!response.ok) return {patch:null,status:response.status};
     const json = await response.json() as {choices?:{message?:{content?:string}}[]};

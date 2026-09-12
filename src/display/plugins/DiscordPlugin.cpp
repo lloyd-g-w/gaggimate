@@ -352,7 +352,10 @@ bool DiscordPlugin::uploadBridgeShot(uint32_t shotId) {
     JsonDocument previousDoc(&psramAllocator);
     ShotHistory.getLastNotes(shotId, previousDoc);
     JsonObject previous = doc["previous"].to<JsonObject>();
-    static constexpr const char *PREVIOUS_KEYS[] = {"rating", "grindSetting", "doseIn", "doseOut", "beanType", "notes"};
+    // Keep in sync with the bridge's NotesPatch (gaggibot/src/types.ts): a key missing here is
+    // silently dropped in both directions.
+    static constexpr const char *PREVIOUS_KEYS[] = {"rating",   "grindSetting", "doseIn", "doseOut",
+                                                    "beanType", "balanceTaste", "notes"};
     for (const char *key : PREVIOUS_KEYS) {
         JsonVariantConst value = previousDoc[key];
         // Omit unknown fields entirely: the bridge validates `previous` against a strict schema and
@@ -411,7 +414,8 @@ bool DiscordPlugin::pollBridgeFeedback() {
     }
 
     uint32_t maxAppliedId = cursor;
-    static constexpr const char *PATCH_KEYS[] = {"rating", "grindSetting", "doseIn", "doseOut", "beanType", "notes"};
+    static constexpr const char *PATCH_KEYS[] = {"rating",   "grindSetting", "doseIn", "doseOut",
+                                                 "beanType", "balanceTaste", "notes"};
     for (JsonObjectConst event : events) {
         uint32_t eventId = event["id"] | 0;
         uint32_t shotId = event["shotId"] | 0;
