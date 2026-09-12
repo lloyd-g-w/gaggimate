@@ -54,6 +54,49 @@ docker compose logs -f gaggibot
 
 Health is exposed without authentication at `GET /health`. A healthy response requires both SQLite and the Discord Gateway to be ready. Do not expose port 3000 directly to the public internet; put it on a trusted LAN/VPN, or behind an HTTPS reverse proxy. The shared bearer token protects API calls but does not encrypt HTTP traffic.
 
+## Testing it
+
+### 1. Is the deployment wired up? (no shot needed)
+
+Open **Settings → Plugins → Discord Shot Feedback** and press **Send test message**. With a real
+token this sends an actual Discord DM to every user in `DISCORD_USER_IDS`, with a ✅ reaction added
+to it. Nothing is recorded as a shot, so it is safe to press any time.
+
+The ✅ reaction matters: it proves the bot can react, which is how every real step is answered. The
+result appears right in the card, and each failure explains itself, e.g.
+
+| What you see | What to fix |
+|---|---|
+| *Bridge rejected the token* | Copy `GAGGIBOT_SHARED_TOKEN` into **Bridge access token** and Save & Restart |
+| *Could not reach the bridge* | Wrong URL/port, or the container is not running |
+| *Bridge is running but not connected to Discord yet* | Check the container logs; usually a bad `DISCORD_BOT_TOKEN` |
+| *Bridge reached Discord but the DM failed* | The bot must share a server with you and have **Send Messages** |
+| *Bridge is in DRY RUN mode* | `GAGGIBOT_DRY_RUN` is set on the container; remove it to send for real |
+
+The same check from a shell (this *does* DM your users):
+
+```sh
+docker exec -it gaggibot node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/v1/test',{method:'POST',headers:{authorization:'Bearer '+process.env.GAGGIBOT_SHARED_TOKEN}}).then(r=>r.json()).then(console.log)"
+```
+
+`GET /api/v1/ping` is a cheaper probe that makes no Discord call: it only proves the display can
+reach the bridge and that the token is accepted.
+
+### 2. Full flow without Discord or a shot
+
+```sh
+npm ci && npm run build
+npm run smoke     # starts in DRY RUN mode, uploads a shot, answers every step, checks the events
+```
+
+`npm run smoke` prints every message the bot would have sent (summary, each prompt, recap), then
+the feedback events the display would poll for and acknowledge. `npm test` covers the same paths.
+
+### 3. Full flow with Discord
+
+Pull a shot. Within a couple of seconds you should get the summary and the rating prompt; the
+answer reaches shot history within about 2 s of each reply.
+
 ## GaggiMate bridge API
 
 All `/api/v1` endpoints require `Authorization: Bearer <GAGGIBOT_SHARED_TOKEN>`. JSON request bodies are capped at 32 KiB and API clients are rate-limited.

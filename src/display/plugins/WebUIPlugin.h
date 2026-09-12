@@ -64,6 +64,10 @@ class WebUIPlugin : public Plugin {
 
     // Core dump download
     void handleCoreDumpDownload(AsyncWebServerRequest *request);
+    // Gaggibot/Discord "Test" button. The plugin task owns the network stack, so these handlers only
+    // relay: POST asks the plugin to run a test, GET reports the last result.
+    void handleDiscordTestStatus(AsyncWebServerRequest *request);
+    void handleDiscordTestRequest(AsyncWebServerRequest *request);
 
     GitHubOTA *ota = nullptr;
     AsyncWebServer server;
@@ -88,6 +92,12 @@ class WebUIPlugin : public Plugin {
     // stall mid-asset-serve). Keeping one doc lets its underlying pool grow
     // once and stay put.
     JsonDocument statusDoc{&psramAllocator};
+
+    // Last result of the plugin "Test" button, written from the Discord plugin's task and read from
+    // the web task, hence the mutex.
+    std::mutex discordTestMutex;
+    int discordTestState = 0; // 0 idle, 1 running, 2 ok, 3 failed
+    String discordTestMessage;
 };
 
 #endif // WEBUIPLUGIN_H

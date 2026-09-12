@@ -57,7 +57,8 @@ export function patchForReuse(w: Workflow): NotesPatch | null {
 }
 export function savedPart(field: keyof NotesPatch, value: unknown): string {
   const label:Record<keyof NotesPatch,string>={rating:"rating",grindSetting:"grind",doseIn:"in",doseOut:"out",beanType:"bean",notes:"note"};
-  return `${label[field]} ${String(value).slice(0,60)}`;
+  const unit=field === "doseIn" || field === "doseOut" ? " g" : "";
+  return `${label[field]} ${String(value).slice(0,60)}${unit}`;
 }
 export function stepMessage(w: Workflow): string {
   const field=STEPS[w.step]; if (!field) return "";

@@ -67,6 +67,51 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
     try { const device=z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/).parse(req.params.deviceId); const body=z.object({through:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).strict().parse(req.body); store.acknowledge(device,body.through); res.status(204).end(); }
     catch(e){next(e);}
   });
+
+  // Connectivity test: sends a real DM to every configured user. Also the endpoint behind the
+  // display's "Test" button, so a misconfigured token or missing DM permission is diagnosable
+  // without pulling a shot.
+  app.post("/api/v1/test",async(_req,res)=>{
+    if(!bot.ready) return res.status(503).json({ok:false,error:"discord_not_ready",dryRun:cfg.dryRun});
+    try {
+      const results=await bot.sendTestMessage();
+      const ok=results.length>0&&results.every(r=>r.delivered);
+      if(!ok) log.warn("Test message delivery failed",{failed:results.filter(r=>!r.delivered).length});
+      return res.status(ok?200:502).json({ok,dryRun:cfg.dryRun,results});
+    } catch(e) {
+      log.error("Test message request failed",{error:e instanceof Error?e.message.slice(0,300):"unknown"});
+      return res.status(500).json({ok:false,error:"internal_error"});
+    }
+  });
+  // Cheap readiness probe (no Discord call): lets the display distinguish "unreachable/wrong token"
+  // from "reachable but Discord is down".
+  app.get("/api/v1/ping",(_req,res)=>res.json({ok:true,dryRun:cfg.dryRun,discord:bot.ready,users:cfg.userIds.length}));
+
+  // Dry-run harness: only exists when GAGGIBOT_DRY_RUN=1, and still requires the bearer token. It
+  // drives the exact same handlers as Discord events so the state machine can be tested end to end
+  // without a bot account, and lets a script read back what the bot would have sent.
+  if (cfg.dryRun) {
+    app.get("/api/v1/_dev/outbox",(_req,res)=>res.json({messages:bot.outboxSnapshot()}));
+    app.post("/api/v1/_dev/outbox/clear",(_req,res)=>{bot.clearOutbox();res.status(204).end();});
+    app.post("/api/v1/_dev/reply",(req,res,next)=>{
+      try {
+        const body=z.object({text:z.string().min(1).max(2000),userId:z.string().regex(/^\d{15,22}$/).optional()}).strict().parse(req.body);
+        void bot.handleUserText(body.userId??cfg.userIds[0]!,body.text);
+        res.status(202).json({accepted:true});
+      } catch(e){next(e);}
+    });
+    app.post("/api/v1/_dev/react",(req,res,next)=>{
+      try {
+        const body=z.object({emoji:z.string().min(1).max(32),userId:z.string().regex(/^\d{15,22}$/).optional()}).strict().parse(req.body);
+        const userId=body.userId??cfg.userIds[0]!;
+        const workflow=store.getActiveByUser(userId);
+        if (!workflow?.currentMessageId) return res.status(409).json({error:"no_active_prompt"});
+        void bot.handleUserReaction(userId,workflow.currentMessageId,body.emoji);
+        res.status(202).json({accepted:true,messageId:workflow.currentMessageId,step:workflow.step});
+      } catch(e){next(e);}
+    });
+    app.get("/api/v1/_dev/state",(_req,res)=>res.json({workflows:store.listWorkflows(["queued","active"]).map(w=>({id:w.id,userId:w.userId,shotId:w.shotId,step:w.step,status:w.status,answeredMask:w.answeredMask,savedParts:w.savedParts,currentMessageId:w.currentMessageId}))}));
+  }
   app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{
     if(err instanceof z.ZodError)return res.status(400).json({error:"invalid_request",issues:err.issues.map(i=>({path:i.path.join("."),message:i.message}))});
     // http-errors from body-parser (express.json limit / malformed JSON).

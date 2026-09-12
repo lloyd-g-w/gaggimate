@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <atomic>
 #include <display/core/Plugin.h>
 #include <map>
 #include <mutex>
@@ -13,6 +14,16 @@ constexpr uint32_t DISCORD_POLL_INTERVAL_MS = 10000;
 constexpr uint32_t DISCORD_WINDOW_MS = 30 * 60 * 1000;
 constexpr uint32_t GAGGIBOT_POLL_INTERVAL_MS = 2000;
 constexpr uint32_t GAGGIBOT_MAX_BACKOFF_MS = 5 * 60 * 1000;
+
+// "Test" button support. The web UI triggers the request event; this plugin's task (which owns the
+// TLS/HTTP stack) performs the test and publishes the result event, so the async web task never
+// blocks and never performs a TLS handshake on its small stack.
+constexpr const char *GAGGIBOT_TEST_REQUEST_EVENT = "evt:gaggibot:test-request";
+constexpr const char *GAGGIBOT_TEST_RESULT_EVENT = "evt:gaggibot:test-result";
+constexpr int GAGGIBOT_TEST_IDLE = 0;
+constexpr int GAGGIBOT_TEST_RUNNING = 1;
+constexpr int GAGGIBOT_TEST_OK = 2;
+constexpr int GAGGIBOT_TEST_FAILED = 3;
 
 // Feedback is collected as a sequence of step messages, one field each, in this order.
 constexpr int DISCORD_STEP_RATING = 0;
@@ -96,6 +107,12 @@ class DiscordPlugin : public Plugin {
     bool pollBridgeFeedback();
     HttpResult bridgeRequest(const char *method, const String &url, const String &jsonBody);
 
+    // --- Test button (Settings -> Plugins) -----------------------------------------------------------------
+    void enqueueBridgeTest();
+    bool performBridgeTest(String &message);
+    bool performDirectTest(String &message);
+    void publishBridgeTestResult(int state, const String &message);
+
     void enqueueShot(uint32_t shotId);
     std::vector<uint32_t> drainQueue();
 
@@ -138,6 +155,8 @@ class DiscordPlugin : public Plugin {
     uint32_t bridgeAfterEventId = 0;
     uint32_t bridgeNextAttemptMs = 0;
     uint32_t bridgeBackoffMs = GAGGIBOT_POLL_INTERVAL_MS;
+    // Set by the web UI handler (any task), consumed by this plugin's task.
+    std::atomic<bool> bridgeTestRequested{false};
 
     // Task-owned state; only ever touched from taskLoop() and its callees on the DiscordPlugin task.
     std::vector<DiscordPendingShot> pending;

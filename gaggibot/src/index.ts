@@ -10,7 +10,7 @@ const log=logger(cfg.LOG_LEVEL);
 const store=new Store(cfg.DATA_DIR);
 const bot=new DiscordBot(cfg,store,log);
 const server=http.createServer(createApp(cfg,store,bot,log));
-server.listen(cfg.PORT,"0.0.0.0",()=>log.info("HTTP server listening",{port:cfg.PORT}));
+server.listen(cfg.PORT,"0.0.0.0",()=>log.info("HTTP server listening",{port:cfg.PORT,dryRun:cfg.dryRun}));
 void bot.start().catch(error=>{log.error("Discord login failed",{error:error instanceof Error?error.message:"unknown"}); process.exitCode=1; void shutdown();});
 let stopping=false;
 async function shutdown():Promise<void>{

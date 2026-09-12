@@ -1,11 +1,12 @@
 import { faTrashCan } from '@fortawesome/free-solid-svg-icons/faTrashCan';
 import { faEye } from '@fortawesome/free-solid-svg-icons/faEye';
 import { faEyeSlash } from '@fortawesome/free-solid-svg-icons/faEyeSlash';
+import { faPaperPlane } from '@fortawesome/free-solid-svg-icons/faPaperPlane';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import homekitImage from '../../assets/homekit.png';
 import { faCalendarDays } from '@fortawesome/free-solid-svg-icons/faCalendarDays';
 import { computed } from '@preact/signals';
-import { useState } from 'preact/hooks';
+import { useCallback, useState } from 'preact/hooks';
 import { machine } from '../../services/ApiService.js';
 
 const gearpumpAddon = computed(() => machine.value.capabilities.gearpumpAddon);
@@ -46,6 +47,30 @@ export function PluginCard({
   const [showDiscordToken, setShowDiscordToken] = useState(false);
   const [showDiscordAiKey, setShowDiscordAiKey] = useState(false);
   const [showGaggibotToken, setShowGaggibotToken] = useState(false);
+  // 0 idle, 1 running, 2 ok, 3 failed — mirrors the plugin's test state machine.
+  const [discordTest, setDiscordTest] = useState({ state: 0, message: '' });
+  const [discordTestPending, setDiscordTestPending] = useState(false);
+
+  const runDiscordTest = useCallback(async () => {
+    setDiscordTestPending(true);
+    setDiscordTest({ state: 1, message: 'Contacting the bridge…' });
+    try {
+      await fetch('/api/plugins/discord/test', { method: 'POST' });
+      // The display performs the test on its own task, so poll until it reports a result.
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const response = await fetch('/api/plugins/discord/test');
+        if (!response.ok) continue;
+        const result = await response.json();
+        setDiscordTest({ state: result.state ?? 0, message: result.message ?? '' });
+        if (result.state === 2 || result.state === 3) break;
+      }
+    } catch (e) {
+      setDiscordTest({ state: 3, message: 'Could not reach the display' });
+    } finally {
+      setDiscordTestPending(false);
+    }
+  }, []);
 
   const discordUsers = parseDiscordUsers(formData.discordUsers);
   const discordFieldsValue =
@@ -456,6 +481,43 @@ export function PluginCard({
 
             <div className='badge badge-primary'>
               Mode: {formData.gaggibotUrl ? 'External Gaggibot (recommended)' : 'Direct from display (legacy)'}
+            </div>
+
+            <div className='rounded-box bg-base-200 space-y-2 p-3'>
+              <div className='flex flex-wrap items-center gap-2'>
+                <button
+                  type='button'
+                  className='btn btn-sm btn-primary'
+                  disabled={discordTestPending || !formData.discord}
+                  onClick={runDiscordTest}
+                >
+                  {discordTestPending ? (
+                    <span className='loading loading-spinner loading-xs' />
+                  ) : (
+                    <FontAwesomeIcon icon={faPaperPlane} />
+                  )}
+                  {discordTestPending ? 'Testing…' : 'Send test message'}
+                </button>
+                <span className='text-xs opacity-60'>
+                  Save the settings first, then send a test to confirm the path works. Nothing is
+                  recorded as a shot.
+                </span>
+              </div>
+              {!formData.discord && (
+                <p className='text-xs opacity-60'>Enable Discord shot feedback to test it.</p>
+              )}
+              {discordTest.state === 1 && (
+                <p className='text-sm'>
+                  <span className='loading loading-spinner loading-xs mr-2' />
+                  {discordTest.message || 'Testing…'}
+                </p>
+              )}
+              {discordTest.state === 2 && (
+                <p className='text-sm text-success'>✓ {discordTest.message}</p>
+              )}
+              {discordTest.state === 3 && (
+                <p className='text-sm text-error'>✗ {discordTest.message}</p>
+              )}
             </div>
 
             <div className='form-control'>

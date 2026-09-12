@@ -8,6 +8,7 @@
 #include <display/core/process/GrindProcess.h>
 #include <display/models/profile.h>
 #include <display/plugins/BLEScalePlugin.h>
+#include <display/plugins/DiscordPlugin.h>
 #include <display/plugins/ShotHistoryPlugin.h>
 #include <display/util/PsramStlAllocator.h>
 #include <display/util/PsramWsBuffer.h>
@@ -60,6 +61,12 @@ void WebUIPlugin::setup(Controller *_controller, PluginManager *_pluginManager) 
     this->controller = _controller;
     this->profileManager = _controller->getProfileManager();
     this->pluginManager = _pluginManager;
+    // Result of the Discord/Gaggibot "Test" button, published by the Discord plugin's task.
+    pluginManager->on(GAGGIBOT_TEST_RESULT_EVENT, [this](Event const &event) {
+        std::lock_guard<std::mutex> lock(discordTestMutex);
+        discordTestState = event.getInt("state");
+        discordTestMessage = event.getString("message");
+    });
     this->ota = new GitHubOTA(
         BUILD_GIT_VERSION, controller->getSystemInfo().version,
         RELEASE_URL + (controller->getSettings().getOTAChannel() == "latest" ? "latest" : "tag/nightly"),
@@ -347,6 +354,10 @@ void WebUIPlugin::setupServer() {
     server.on("/api/scales/connect", [this](AsyncWebServerRequest *request) { handleBLEScaleConnect(request); });
     server.on("/api/scales/scan", [this](AsyncWebServerRequest *request) { handleBLEScaleScan(request); });
     server.on("/api/scales/info", [this](AsyncWebServerRequest *request) { handleBLEScaleInfo(request); });
+    server.on("/api/plugins/discord/test", HTTP_GET,
+              [this](AsyncWebServerRequest *request) { handleDiscordTestStatus(request); });
+    server.on("/api/plugins/discord/test", HTTP_POST,
+              [this](AsyncWebServerRequest *request) { handleDiscordTestRequest(request); });
     FS *fs = controller->getStorageFS();
     server.serveStatic("/api/history/", *fs, "/h/").setCacheControl("no-store");
     server.on("/api/history/index.bin", HTTP_GET, [this, fs](AsyncWebServerRequest *request) {
@@ -961,6 +972,32 @@ void WebUIPlugin::handleBLEScaleConnect(AsyncWebServerRequest *request) {
     BLEScales.connect(request->arg("uuid").c_str());
     JsonDocument doc(&psramAllocator);
     doc["success"] = true;
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    serializeJson(doc, *response);
+    request->send(response);
+}
+
+void WebUIPlugin::handleDiscordTestRequest(AsyncWebServerRequest *request) {
+    // Only flag the plugin; it performs the request on its own task (which owns the TLS stack) and
+    // publishes the outcome, so this handler stays non-blocking on the web server task.
+    if (pluginManager != nullptr) {
+        pluginManager->trigger(GAGGIBOT_TEST_REQUEST_EVENT);
+    }
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    response->setCode(202);
+    JsonDocument doc(&psramAllocator);
+    doc["accepted"] = true;
+    serializeJson(doc, *response);
+    request->send(response);
+}
+
+void WebUIPlugin::handleDiscordTestStatus(AsyncWebServerRequest *request) {
+    JsonDocument doc(&psramAllocator);
+    {
+        std::lock_guard<std::mutex> lock(discordTestMutex);
+        doc["state"] = discordTestState;
+        doc["message"] = discordTestMessage;
+    }
     AsyncResponseStream *response = request->beginResponseStream("application/json");
     serializeJson(doc, *response);
     request->send(response);

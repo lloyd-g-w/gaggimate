@@ -171,6 +171,8 @@ void DiscordPlugin::setup(Controller *c, PluginManager *pm) {
     pluginManager = pm;
     wifiClient.setCACertBundle(x509_crt_imported_bundle_bin_start);
     pluginManager->on("evt:history-shot-saved", [this](Event const &e) { enqueueShot(e.getInt("id")); });
+    // The web UI only sets a flag here (no I/O on the caller's task); the work happens on our task.
+    pluginManager->on(GAGGIBOT_TEST_REQUEST_EVENT, [this](Event const &) { enqueueBridgeTest(); });
     // This task performs mbedTLS handshakes (HTTPClient + WiFiClientSecure), ArduinoJson work and
     // String building. configMINIMAL_STACK_SIZE is only 768 words on the S3, so *8 (~6 KB) was far
     // too small and overflowed on the second HTTPS request. TLS alone needs ~8-10 KB of stack.
@@ -205,6 +207,13 @@ void DiscordPlugin::taskLoop() {
     if (isBridgeMode()) {
         bridgeTaskLoop();
         return; // never contact Discord/OpenAI directly while an external bridge is configured
+    }
+
+    if (bridgeTestRequested.exchange(false)) {
+        publishBridgeTestResult(GAGGIBOT_TEST_RUNNING, "Contacting Discord\xE2\x80\xA6");
+        String message;
+        bool ok = performDirectTest(message);
+        publishBridgeTestResult(ok ? GAGGIBOT_TEST_OK : GAGGIBOT_TEST_FAILED, message);
     }
 
     for (uint32_t shotId : drainQueue()) {
@@ -279,6 +288,13 @@ String DiscordPlugin::bridgeDeviceId() const {
 }
 
 void DiscordPlugin::bridgeTaskLoop() {
+    if (bridgeTestRequested.exchange(false)) {
+        publishBridgeTestResult(GAGGIBOT_TEST_RUNNING, "Contacting the bridge\xE2\x80\xA6");
+        String message;
+        bool ok = performBridgeTest(message);
+        publishBridgeTestResult(ok ? GAGGIBOT_TEST_OK : GAGGIBOT_TEST_FAILED, message);
+    }
+
     for (uint32_t shotId : drainQueue()) {
         if (std::find(bridgeUploadQueue.begin(), bridgeUploadQueue.end(), shotId) == bridgeUploadQueue.end()) {
             if (bridgeUploadQueue.size() >= 16) {
@@ -500,6 +516,139 @@ DiscordPlugin::HttpResult DiscordPlugin::bridgeRequest(const char *method, const
     }
     http.end();
     return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Test button
+// ---------------------------------------------------------------------------------------------
+
+void DiscordPlugin::enqueueBridgeTest() { bridgeTestRequested.store(true); }
+
+void DiscordPlugin::publishBridgeTestResult(int state, const String &message) {
+    if (pluginManager == nullptr) {
+        return;
+    }
+    Event event{GAGGIBOT_TEST_RESULT_EVENT};
+    event.setInt("state", state);
+    event.setString("message", message);
+    pluginManager->trigger(event);
+}
+
+// Turns a failed bridge request into something actionable for the user.
+static String describeBridgeFailure(int status) {
+    switch (status) {
+    case 401:
+    case 403:
+        return "Bridge rejected the token \xE2\x80\x94 copy GAGGIBOT_SHARED_TOKEN into Bridge access token";
+    case 404:
+        return "Bridge replied 404 \xE2\x80\x94 check the URL and port (the API lives under /api/v1)";
+    case 413:
+        return "Bridge rejected the request as too large";
+    case 429:
+        return "Bridge rate-limited the request; try again in a minute";
+    case 502:
+        return "Bridge reached Discord but the DM failed \xE2\x80\x94 check the bot shares a server with you and has Send Messages";
+    case 503:
+        return "Bridge is running but not connected to Discord yet \xE2\x80\x94 check its logs (bad token?)";
+    case -2:
+        return "Gaggibot URL must start with http:// or https://";
+    case -3:
+        return "Bridge response was unexpectedly large";
+    case 0:
+    case -1:
+        return "Could not reach the bridge \xE2\x80\x94 check the URL, port and that the container is running";
+    default:
+        return "Bridge returned HTTP " + String(status);
+    }
+}
+
+bool DiscordPlugin::performBridgeTest(String &message) {
+    String base = bridgeBaseUrl();
+    if (base.isEmpty()) {
+        message = "Set a Gaggibot URL that starts with http:// or https://";
+        return false;
+    }
+    if (controller->getSettings().getGaggibotToken().isEmpty()) {
+        message = "Set the bridge access token (same value as GAGGIBOT_SHARED_TOKEN)";
+        return false;
+    }
+
+    HttpResult result = bridgeRequest("POST", base + "/api/v1/test", "{}");
+    if (result.status < 200 || result.status >= 300) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot test failed -> %d", result.status);
+        message = describeBridgeFailure(result.status);
+        return false;
+    }
+
+    JsonDocument doc(&psramAllocator);
+    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
+        message = "Bridge replied with unreadable JSON";
+        return false;
+    }
+    int delivered = 0;
+    for (JsonObjectConst entry : doc["results"].as<JsonArrayConst>()) {
+        if (entry["delivered"] | false) {
+            delivered++;
+        }
+    }
+    if (doc["dryRun"] | false) {
+        message = "Bridge is in DRY RUN mode: message recorded, not sent (" + String(delivered) + " user(s))";
+        return true;
+    }
+    if (delivered == 0) {
+        message = "Bridge accepted the test but delivered to nobody \xE2\x80\x94 check DISCORD_USER_IDS";
+        return false;
+    }
+    message = "Test message sent to " + String(delivered) + " Discord user(s) \xE2\x80\x94 check your DMs";
+    return true;
+}
+
+// Direct mode has no bridge to test, so validate the on-device Discord setup itself by DMing every
+// configured user through the same helpers the real flow uses.
+bool DiscordPlugin::performDirectTest(String &message) {
+    Settings &settings = controller->getSettings();
+    if (!settings.isDiscord()) {
+        message = "Enable the Discord plugin first";
+        return false;
+    }
+    String token = settings.getDiscordBotToken();
+    token.trim();
+    if (token.isEmpty()) {
+        message = "Set the Discord bot token first";
+        return false;
+    }
+    std::vector<String> userIds = explode(settings.getDiscordUsers(), ',');
+    if (userIds.empty()) {
+        message = "Set at least one Discord user ID";
+        return false;
+    }
+
+    int delivered = 0;
+    int lastStatus = 0;
+    for (String &userId : userIds) {
+        userId.trim();
+        if (userId.isEmpty()) {
+            continue;
+        }
+        String channelId = getOrOpenDmChannel(userId);
+        if (channelId.isEmpty()) {
+            lastStatus = 403;
+            continue;
+        }
+        String id = sendMessage(channelId, "\xF0\x9F\xA7\xAA GaggiMate test \xE2\x80\x94 the display can DM you "
+                                             "directly. Nothing was recorded.");
+        if (!id.isEmpty()) {
+            delivered++;
+        } else {
+            lastStatus = 400;
+        }
+    }
+    if (delivered == 0) {
+        message = describeBridgeFailure(lastStatus);
+        return false;
+    }
+    message = "Test message sent to " + String(delivered) + " Discord user(s) \xE2\x80\x94 check your DMs";
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------

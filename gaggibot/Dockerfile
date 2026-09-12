@@ -12,7 +12,7 @@ ENV NODE_ENV=production PORT=3000 DATA_DIR=/data
 WORKDIR /app
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist/src ./dist
+COPY --from=build /app/dist ./dist
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 EXPOSE 3000
