@@ -22,28 +22,124 @@ constexpr const char *AI_SYSTEM_PROMPT =
     "You extract espresso shot feedback. Return ONLY a JSON object with keys rating (integer 1-5 or null), "
     "grindSetting (string or null), doseIn (number grams or null), doseOut (number grams or null), beanType (string "
     "or null), notes (string or null: everything else the user said about taste/experience, concise). Never invent "
-    "values. The user may paste a 'key: value' template; any value that is still an angle-bracket placeholder such "
-    "as <grind> or <text> was not filled in and must be treated as null.";
+    "values. The user is answering one question at a time; the message states which field is being asked, and a "
+    "bare value with no other context belongs to that field. If the user mentions other fields too, extract them "
+    "as well.";
 
-// URL-encoded UTF-8 of the keycap emoji ("1\uFE0F\u20E3" ...), for the reactions endpoint path.
+// Discord keycap reaction emoji for a 1-5 rating ("1\uFE0F\u20E3" ...), raw UTF-8 as returned by the
+// API in reactions[].emoji.name, and URL-encoded for the reactions endpoint path.
+const char *const RATING_KEYCAPS[5] = {"1\xEF\xB8\x8F\xE2\x83\xA3", "2\xEF\xB8\x8F\xE2\x83\xA3", "3\xEF\xB8\x8F\xE2\x83\xA3",
+                                       "4\xEF\xB8\x8F\xE2\x83\xA3", "5\xEF\xB8\x8F\xE2\x83\xA3"};
 const char *const RATING_KEYCAPS_URLENC[5] = {"1%EF%B8%8F%E2%83%A3", "2%EF%B8%8F%E2%83%A3", "3%EF%B8%8F%E2%83%A3",
                                               "4%EF%B8%8F%E2%83%A3", "5%EF%B8%8F%E2%83%A3"};
+// U+21A9 U+FE0F "↩️" = reuse last shot's value, U+27A1 U+FE0F "➡️" = skip this field.
+constexpr const char *REUSE_EMOJI = "\xE2\x86\xA9\xEF\xB8\x8F";
+constexpr const char *REUSE_EMOJI_URLENC = "%E2%86%A9%EF%B8%8F";
+constexpr const char *SKIP_EMOJI = "\xE2\x9E\xA1\xEF\xB8\x8F";
+constexpr const char *SKIP_EMOJI_URLENC = "%E2%9E%A1%EF%B8%8F";
 
-// "<grind>" style tokens from the copy-paste template mean "not filled in".
-static bool isPlaceholder(const String &value) { return value.length() >= 2 && value.startsWith("<") && value.endsWith(">"); }
+struct StepDef {
+    const char *title;    // message header
+    const char *notesKey; // key in /h/<id>.json
+    const char *unit;     // suffix when showing the last value ("" = none)
+    const char *prompt;   // how to answer by text
+};
+// Order requested: rating, grind, dose in, bean, note.
+const StepDef STEPS[DISCORD_STEP_COUNT] = {
+    {"Rate this shot", "rating", "", "Click 1\xEF\xB8\x8F\xE2\x83\xA3\xE2\x80\x93" "5\xEF\xB8\x8F\xE2\x83\xA3 below or send a number 1-5."},
+    {"Grind", "grindSetting", "", "Send the grind setting for this shot as a message, e.g. 3.5"},
+    {"Dose in", "doseIn", " g", "Send the dose for this shot as a message, e.g. 18"},
+    {"Bean", "beanType", "", "Send the beans you used, e.g. Ethiopia Guji"},
+    {"Note", "notes", "", "Send tasting notes or anything worth remembering."},
+};
 
-// Discord keycap reaction emoji for a 1-5 rating, indexed 0-4.
-const char *const RATING_KEYCAPS[5] = {"1\xEF\xB8\x8F\xE2\x83\xA3", "2\xEF\xB8\x8F\xE2\x83\xA3", "3\xEF\xB8\x8F\xE2\x83\xA3",
-                                        "4\xEF\xB8\x8F\xE2\x83\xA3", "5\xEF\xB8\x8F\xE2\x83\xA3"};
-
-// bit0 profile, bit1 duration, bit2 yield/volume, bit3 avgTemp, bit4 maxPressure, bit5 avgFlow
 constexpr int FIELD_BIT_PROFILE = 0x01;
 constexpr int FIELD_BIT_DURATION = 0x02;
 constexpr int FIELD_BIT_VOLUME = 0x04;
 constexpr int FIELD_BIT_TEMP = 0x08;
 constexpr int FIELD_BIT_PRESSURE = 0x10;
 constexpr int FIELD_BIT_FLOW = 0x20;
+
+constexpr size_t DISCORD_MAX_MESSAGE_BYTES = 2000; // Discord hard limit on message content
+constexpr size_t SHOWN_VALUE_MAX_BYTES = 120;       // previous value as rendered in a step prompt
+constexpr size_t RECAP_PART_MAX_BYTES = 60;         // one "grind 3.5" entry in the recap
+
+// "<grind>" style tokens mean "not filled in".
+bool isPlaceholder(const String &value) { return value.length() >= 2 && value.startsWith("<") && value.endsWith(">"); }
+
+// Cut a string to at most maxBytes without splitting a UTF-8 sequence; appends an ellipsis when cut.
+String truncateUtf8(const String &s, size_t maxBytes) {
+    if (s.length() <= maxBytes) {
+        return s;
+    }
+    size_t cut = maxBytes >= 3 ? maxBytes - 3 : 0; // room for "..."
+    while (cut > 0 && (static_cast<uint8_t>(s[cut]) & 0xC0) == 0x80) {
+        cut--; // step back to a UTF-8 sequence start
+    }
+    return s.substring(0, cut) + "...";
+}
+
+String stars(int rating) {
+    String s;
+    for (int i = 0; i < rating; i++) {
+        s += "\xE2\xAD\x90"; // ⭐
+    }
+    return s;
+}
+
+// Fill exactly one field of a patch from a bare value, by step.
+void setStepValue(DiscordNotesPatch &patch, int step, const String &value) {
+    switch (step) {
+    case DISCORD_STEP_RATING: {
+        int r = value.toInt();
+        if (r >= 1 && r <= 5) {
+            patch.rating = r;
+            patch.hasRating = true;
+        }
+        break;
+    }
+    case DISCORD_STEP_GRIND:
+        patch.grindSetting = value;
+        patch.hasGrindSetting = true;
+        break;
+    case DISCORD_STEP_DOSE_IN:
+        patch.doseIn = value;
+        patch.hasDoseIn = true;
+        break;
+    case DISCORD_STEP_BEAN:
+        patch.beanType = value;
+        patch.hasBeanType = true;
+        break;
+    case DISCORD_STEP_NOTE:
+        patch.notes = value;
+        patch.hasNotes = true;
+        break;
+    default:
+        break;
+    }
+}
+
+bool patchHasStep(const DiscordNotesPatch &patch, int step) {
+    switch (step) {
+    case DISCORD_STEP_RATING:
+        return patch.hasRating;
+    case DISCORD_STEP_GRIND:
+        return patch.hasGrindSetting;
+    case DISCORD_STEP_DOSE_IN:
+        return patch.hasDoseIn;
+    case DISCORD_STEP_BEAN:
+        return patch.hasBeanType;
+    case DISCORD_STEP_NOTE:
+        return patch.hasNotes;
+    default:
+        return false;
+    }
+}
 } // namespace
+
+// ---------------------------------------------------------------------------------------------
+// Lifecycle / task
+// ---------------------------------------------------------------------------------------------
 
 void DiscordPlugin::setup(Controller *c, PluginManager *pm) {
     controller = c;
@@ -93,10 +189,17 @@ void DiscordPlugin::taskLoop() {
             it = pending.erase(it);
             continue;
         }
-        pollPendingShot(*it);
+        if (pollPendingShot(*it)) {
+            it = pending.erase(it);
+            continue;
+        }
         ++it;
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// New shot: summary, then the first step
+// ---------------------------------------------------------------------------------------------
 
 void DiscordPlugin::processNewShot(uint32_t shotId) {
     Settings &settings = controller->getSettings();
@@ -119,22 +222,73 @@ void DiscordPlugin::processNewShot(uint32_t shotId) {
             ESP_LOGW("DiscordPlugin", "Failed to open DM channel for a configured user");
             continue;
         }
-        String messageId = sendMessage(channelId, summary);
-        if (messageId.isEmpty()) {
+        // One live feedback flow per user: a newer shot supersedes an unfinished older one (its
+        // already-answered fields stay saved), and a duplicated user row must not create two flows
+        // that would both consume the same replies.
+        bool duplicateRow = false;
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (it->userId == userId) {
+                if (it->shotId == shotId) {
+                    duplicateRow = true;
+                    break;
+                }
+                it = pending.erase(it);
+                continue;
+            }
+            ++it;
+        }
+        if (duplicateRow) {
+            continue;
+        }
+
+        String summaryId = sendMessage(channelId, summary);
+        if (summaryId.isEmpty()) {
             ESP_LOGW("DiscordPlugin", "Failed to send shot summary for shot %u", shotId);
             continue;
         }
-        seedRatingReactions(channelId, messageId);
 
         DiscordPendingShot p;
         p.shotId = shotId;
         p.userId = userId;
         p.channelId = channelId;
-        p.messageId = messageId;
-        p.lastSeenMessageId = messageId;
+        p.step = DISCORD_STEP_RATING;
+        p.lastSeenMessageId = summaryId; // the only time the cursor is seeded from a bot message
         p.startedMs = millis();
+        loadLastValues(p);
+        if (!sendStepMessage(p)) {
+            // Keep the flow; the first prompt is retried on the next poll like any other step.
+            ESP_LOGW("DiscordPlugin", "Failed to send first step for shot %u, will retry", shotId);
+            p.stepMessagePending = true;
+        }
         pending.push_back(p);
     }
+}
+
+void DiscordPlugin::loadLastValues(DiscordPendingShot &shot) {
+    JsonDocument last(&psramAllocator);
+    if (!ShotHistory.getLastNotes(shot.shotId, last)) {
+        return;
+    }
+    for (int i = 0; i < DISCORD_STEP_COUNT; i++) {
+        JsonVariantConst v = last[STEPS[i].notesKey];
+        if (v.isNull()) {
+            continue;
+        }
+        String s = v.as<String>();
+        s.trim();
+        if (s.isEmpty() || isPlaceholder(s)) {
+            continue;
+        }
+        if (i == DISCORD_STEP_RATING) {
+            int r = s.toInt();
+            if (r < 1 || r > 5) {
+                continue; // 0 = unrated
+            }
+        }
+        shot.lastValues[i] = s;
+    }
+    // A note is shot-specific: never offer to reuse it.
+    shot.lastValues[DISCORD_STEP_NOTE] = "";
 }
 
 String DiscordPlugin::buildSummaryMessage(uint32_t shotId) {
@@ -143,78 +297,340 @@ String DiscordPlugin::buildSummaryMessage(uint32_t shotId) {
     Settings &settings = controller->getSettings();
     int fields = settings.getDiscordFields();
 
-    String title = "\u2615 Shot #" + String(shotId);
+    String title = "\xE2\x98\x95 Shot #" + String(shotId); // ☕
     if (ok && (fields & FIELD_BIT_PROFILE)) {
-        title += " \u2014 " + String(entry.profileName);
+        title += " \xE2\x80\x94 " + String(entry.profileName);
     }
     String msg = title + "\n";
 
     if (ok) {
         std::vector<String> parts;
         if (fields & FIELD_BIT_DURATION) {
-            parts.push_back("\u23F1 " + String(entry.duration / 1000.0f, 1) + " s");
+            parts.push_back("\xE2\x8F\xB1 " + String(entry.duration / 1000.0f, 1) + " s");
         }
         if (fields & FIELD_BIT_VOLUME) {
-            parts.push_back("\u2696\uFE0F " + String(entry.volume / 10.0f, 1) + " g");
+            parts.push_back("\xE2\x9A\x96\xEF\xB8\x8F " + String(entry.volume / 10.0f, 1) + " g");
         }
         if (fields & FIELD_BIT_TEMP) {
-            parts.push_back("\U0001F321 " + String(entry.avgTemp / 10.0f, 1) + " \u00B0C");
+            parts.push_back("\xF0\x9F\x8C\xA1 " + String(entry.avgTemp / 10.0f, 1) + " \xC2\xB0" "C");
         }
         if (fields & FIELD_BIT_PRESSURE) {
-            parts.push_back("\u23EB " + String(entry.maxPressure / 10.0f, 1) + " bar");
+            parts.push_back("\xE2\x8F\xAB " + String(entry.maxPressure / 10.0f, 1) + " bar");
         }
         if (fields & FIELD_BIT_FLOW) {
-            parts.push_back("\U0001F4A7 " + String(entry.avgFlow / 100.0f, 1) + " ml/s");
+            parts.push_back("\xF0\x9F\x92\xA7 " + String(entry.avgFlow / 100.0f, 1) + " ml/s");
         }
         if (!parts.empty()) {
             msg += implode(parts, "   ") + "\n";
         }
     }
-
-    // Copy-pastable template, pre-filled from the last shot that has notes. Grind, dose-in and bean
-    // usually carry over between shots; the note never does. Unfilled fields keep an <angle-bracket>
-    // placeholder, which both parsers ignore.
-    JsonDocument last(&psramAllocator);
-    bool hasLast = ShotHistory.getLastNotes(shotId, last);
-    auto pick = [&](const char *key, const char *placeholder) -> String {
-        if (hasLast && last[key].is<const char *>()) {
-            String v = last[key].as<String>();
-            v.trim();
-            if (!v.isEmpty() && !isPlaceholder(v)) {
-                return v;
-            }
-        }
-        return String(placeholder);
-    };
-
-    if (settings.isDiscordAi()) {
-        msg += "Rate it by clicking a reaction below, then just tell me how it was \u2014 grind, dose, beans, "
-               "tasting notes in plain language (or edit the template):\n";
-    } else {
-        msg += "Rate it by clicking a reaction below, then copy, edit and send:\n";
-    }
-    msg += "```\n";
-    msg += "grind: " + pick("grindSetting", "<grind>") + "\n";
-    msg += "in: " + pick("doseIn", "<g>") + "\n";
-    msg += "bean: " + pick("beanType", "<bean>") + "\n";
-    msg += "note: <text>\n";
-    msg += "```";
+    msg += "Let's log it \xE2\x80\x94 answer each step, \xE2\x86\xA9\xEF\xB8\x8F reuses your last shot's value, "
+           "\xE2\x9E\xA1\xEF\xB8\x8F skips.";
     return msg;
 }
 
-void DiscordPlugin::seedRatingReactions(const String &channelId, const String &messageId) {
-    // PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me — one call per keycap. Discord rate-limits
-    // reactions tightly (~1 per 250 ms per channel); pace them and let discordRequest handle 429s.
-    for (int i = 0; i < 5; i++) {
-        HttpResult r = discordRequest(
-            "PUT", "/channels/" + channelId + "/messages/" + messageId + "/reactions/" + RATING_KEYCAPS_URLENC[i] + "/@me",
-            "");
-        if (r.status < 200 || r.status >= 300) {
-            ESP_LOGW("DiscordPlugin", "Failed to seed reaction %d for message %s", i + 1, messageId.c_str());
+String DiscordPlugin::buildStepMessage(const DiscordPendingShot &shot) const {
+    const StepDef &def = STEPS[shot.step];
+    // Bound the previous value (it is rendered twice) so the prompt can never exceed Discord's limit.
+    const String last = truncateUtf8(shot.lastValues[shot.step], SHOWN_VALUE_MAX_BYTES);
+    Settings &settings = controller->getSettings();
+
+    String msg = "-# Shot #" + String(shot.shotId) + " \xC2\xB7 step " + String(shot.step + 1) + "/" +
+                 String(DISCORD_STEP_COUNT) + "\n";
+    msg += "# " + String(def.title) + "\n\n";
+
+    if (!last.isEmpty()) {
+        if (shot.step == DISCORD_STEP_RATING) {
+            msg += "Your last shot was " + stars(last.toInt()) + " (" + last + "/5).\n\n";
+        } else if (shot.step == DISCORD_STEP_DOSE_IN) {
+            msg += "Your last shot was *" + last + def.unit + "* in.\n\n";
+        } else {
+            msg += "Your last shot was *" + last + def.unit + "*.\n\n";
         }
+    }
+
+    if (shot.step == DISCORD_STEP_RATING) {
+        msg += String(def.prompt) + "\n\n";
+    } else if (settings.isDiscordAi() && shot.step == DISCORD_STEP_NOTE) {
+        msg += String(def.prompt) + " Plain language is fine \xE2\x80\x94 anything else you mention (rating, grind, dose, "
+               "beans) is picked up too.\n\n";
+    } else {
+        msg += String(def.prompt) + "\n\n";
+    }
+
+    if (shot.step == DISCORD_STEP_RATING) {
+        msg += "\xE2\x9E\xA1\xEF\xB8\x8F skip";
+    } else if (!last.isEmpty()) {
+        msg += "\xE2\x86\xA9\xEF\xB8\x8F reuse *" + last + def.unit + "*   \xE2\x9E\xA1\xEF\xB8\x8F skip";
+    } else {
+        msg += "\xE2\x9E\xA1\xEF\xB8\x8F skip";
+    }
+    return msg;
+}
+
+bool DiscordPlugin::sendStepMessage(DiscordPendingShot &shot) {
+    shot.stepMessageId = ""; // no live prompt until the new one is confirmed sent
+    String id = sendMessage(shot.channelId, buildStepMessage(shot));
+    if (id.isEmpty()) {
+        return false;
+    }
+    // Anchor reactions on the new prompt. The reply cursor is deliberately NOT moved here: it only
+    // advances from fetched batches, so a reply that arrived between our last GET and this POST is
+    // still picked up next poll (the bot's own prompt is then skipped by the author filter).
+    shot.stepMessageId = id;
+    shot.stepMessagePending = false;
+
+    // Discord rate-limits reactions (~1 per 250 ms per channel); pace them. discordRequest handles 429.
+    if (shot.step == DISCORD_STEP_RATING) {
+        for (int i = 0; i < 5; i++) {
+            addReaction(shot.channelId, id, RATING_KEYCAPS_URLENC[i]);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+    } else if (!shot.lastValues[shot.step].isEmpty()) {
+        addReaction(shot.channelId, id, REUSE_EMOJI_URLENC);
         vTaskDelay(pdMS_TO_TICKS(300));
     }
+    addReaction(shot.channelId, id, SKIP_EMOJI_URLENC);
+    return true;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Polling: text replies first (more explicit), then reactions on the current step message
+// ---------------------------------------------------------------------------------------------
+
+bool DiscordPlugin::pollPendingShot(DiscordPendingShot &shot) {
+    if (shot.finished) {
+        // Every step is done; only the recap is still owed. Retry until it goes out.
+        return sendRecap(shot);
+    }
+    if (shot.stepMessagePending) {
+        // A previous send failed (network blip / rate limit): retry before reading anything.
+        if (!sendStepMessage(shot)) {
+            return false;
+        }
+    }
+    PollResult r = handleReplies(shot);
+    if (r == PollResult::DONE) {
+        return true;
+    }
+    if (r == PollResult::CONSUMED || shot.stepMessagePending || shot.stepMessageId.isEmpty()) {
+        // A text reply moved the flow this poll (reactions on the old prompt are stale now), or
+        // there is no live prompt to read reactions from.
+        return false;
+    }
+    return handleReactions(shot) == PollResult::DONE;
+}
+
+DiscordPlugin::PollResult DiscordPlugin::handleReplies(DiscordPendingShot &shot) {
+    HttpResult result =
+        discordRequest("GET", "/channels/" + shot.channelId + "/messages?after=" + shot.lastSeenMessageId + "&limit=10", "");
+    if (result.status < 200 || result.status >= 300) {
+        return PollResult::IDLE;
+    }
+    JsonDocument doc(&psramAllocator);
+    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
+        return PollResult::IDLE;
+    }
+    JsonArray messages = doc.as<JsonArray>();
+    if (messages.isNull() || messages.size() == 0) {
+        return PollResult::IDLE;
+    }
+
+    Settings &settings = controller->getSettings();
+    PollResult outcome = PollResult::IDLE;
+    // Discord returns newest first; process oldest first so multi-message answers apply in order.
+    for (int i = static_cast<int>(messages.size()) - 1; i >= 0; i--) {
+        JsonObject m = messages[i];
+        String mid = m["id"] | "";
+        if (!mid.isEmpty()) {
+            shot.lastSeenMessageId = mid; // advance only over messages we have actually looked at
+        }
+        String author = m["author"]["id"] | "";
+        if (author != shot.userId) {
+            continue; // the bot's own prompts/recaps and anything else
+        }
+        String content = m["content"] | "";
+        content.trim();
+        if (content.isEmpty()) {
+            continue;
+        }
+
+        DiscordNotesPatch parsed;
+        if (!(settings.isDiscordAi() && applyAiParse(content, shot.step, parsed))) {
+            parsed = parseReply(content, shot.step);
+        }
+        PollResult r = applyPatchAndAdvance(shot, parsed);
+        if (r == PollResult::DONE) {
+            return PollResult::DONE;
+        }
+        if (r == PollResult::CONSUMED) {
+            outcome = PollResult::CONSUMED;
+        }
+        if (shot.finished) {
+            // All steps done but the recap failed to send: stop consuming this batch. step ==
+            // DISCORD_STEP_COUNT is not a valid prompt index, and the next poll goes straight to
+            // the recap-retry branch.
+            break;
+        }
+        if (shot.stepMessagePending) {
+            // The next prompt could not be sent; stop here so later replies in this batch are
+            // re-fetched and applied against the right step once the prompt is out.
+            break;
+        }
+    }
+    return outcome;
+}
+
+DiscordPlugin::PollResult DiscordPlugin::handleReactions(DiscordPendingShot &shot) {
+    int rating = 0;
+    switch (readReaction(shot, rating)) {
+    case ReactionAction::RATE: {
+        DiscordNotesPatch patch;
+        patch.rating = rating;
+        patch.hasRating = true;
+        return applyPatchAndAdvance(shot, patch);
+    }
+    case ReactionAction::REUSE: {
+        const String &last = shot.lastValues[shot.step];
+        if (last.isEmpty()) {
+            return PollResult::IDLE; // nothing to reuse; keep waiting
+        }
+        DiscordNotesPatch patch;
+        setStepValue(patch, shot.step, last);
+        return applyPatchAndAdvance(shot, patch);
+    }
+    case ReactionAction::SKIP:
+        return advanceFrom(shot, shot.step + 1);
+    default:
+        return PollResult::IDLE;
+    }
+}
+
+DiscordPlugin::ReactionAction DiscordPlugin::readReaction(const DiscordPendingShot &shot, int &ratingOut) {
+    HttpResult result = discordRequest("GET", "/channels/" + shot.channelId + "/messages/" + shot.stepMessageId, "");
+    if (result.status < 200 || result.status >= 300) {
+        return ReactionAction::NONE;
+    }
+    JsonDocument doc(&psramAllocator);
+    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
+        return ReactionAction::NONE;
+    }
+    JsonArray reactions = doc["reactions"].as<JsonArray>();
+    if (reactions.isNull()) {
+        return ReactionAction::NONE;
+    }
+
+    // The bot seeds its own reactions ("me" == true, count 1); a user click is any count above
+    // that. A value beats skip when both are present (skip is the likelier mis-click), and among
+    // several ratings the highest user count wins so a later re-click overrides.
+    int bestRating = 0;
+    int bestUserCount = 0;
+    bool reuse = false;
+    bool skip = false;
+    for (JsonObject r : reactions) {
+        int count = r["count"] | 0;
+        bool me = r["me"] | false;
+        int userCount = count - (me ? 1 : 0);
+        if (userCount < 1) {
+            continue;
+        }
+        String name = r["emoji"]["name"] | "";
+        if (shot.step == DISCORD_STEP_RATING) {
+            for (int i = 0; i < 5; i++) {
+                if (name == RATING_KEYCAPS[i] && userCount >= bestUserCount) {
+                    bestUserCount = userCount;
+                    bestRating = i + 1;
+                }
+            }
+        }
+        if (name == REUSE_EMOJI) {
+            reuse = true;
+        } else if (name == SKIP_EMOJI) {
+            skip = true;
+        }
+    }
+    if (bestRating > 0) {
+        ratingOut = bestRating;
+        return ReactionAction::RATE;
+    }
+    if (reuse) {
+        return ReactionAction::REUSE;
+    }
+    if (skip) {
+        return ReactionAction::SKIP;
+    }
+    return ReactionAction::NONE;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step engine
+// ---------------------------------------------------------------------------------------------
+
+DiscordPlugin::PollResult DiscordPlugin::applyPatchAndAdvance(DiscordPendingShot &shot, const DiscordNotesPatch &patch) {
+    JsonDocument patchDoc(&psramAllocator);
+    std::vector<String> parts;
+    buildPatchDocument(patch, patchDoc, parts);
+    if (patchDoc.as<JsonObjectConst>().size() == 0) {
+        return PollResult::IDLE; // nothing usable in the reply; stay on this step
+    }
+    if (!ShotHistory.applyNotesPatch(shot.shotId, patchDoc)) {
+        // Never pretend it was saved; keep the step open so the user can retry.
+        sendMessage(shot.channelId, "\xE2\x9A\xA0\xEF\xB8\x8F Couldn't save that (storage error) \xE2\x80\x94 please try again.");
+        return PollResult::IDLE;
+    }
+    for (const String &p : parts) {
+        shot.savedParts.push_back(truncateUtf8(p, RECAP_PART_MAX_BYTES));
+    }
+    for (int i = 0; i < DISCORD_STEP_COUNT; i++) {
+        if (patchHasStep(patch, i)) {
+            shot.answeredMask |= static_cast<uint8_t>(1u << i);
+        }
+    }
+
+    // Only move on once the field being asked was actually answered (e.g. a free-text reply on
+    // the rating step is saved as a note but the rating question stays open).
+    if (!(shot.answeredMask & (1u << shot.step))) {
+        return PollResult::CONSUMED;
+    }
+    return advanceFrom(shot, shot.step + 1);
+}
+
+DiscordPlugin::PollResult DiscordPlugin::advanceFrom(DiscordPendingShot &shot, int fromStep) {
+    // Skip every step already answered (by an earlier multi-field reply), not just contiguous ones.
+    int next = fromStep;
+    while (next < DISCORD_STEP_COUNT && (shot.answeredMask & (1u << next))) {
+        next++;
+    }
+    shot.step = next;
+    shot.stepMessageId = "";
+    if (shot.step >= DISCORD_STEP_COUNT) {
+        shot.finished = true;
+        return sendRecap(shot) ? PollResult::DONE : PollResult::CONSUMED;
+    }
+    if (!sendStepMessage(shot)) {
+        ESP_LOGW("DiscordPlugin", "Failed to send step %d for shot %u, will retry", shot.step, shot.shotId);
+        shot.stepMessagePending = true;
+    }
+    return PollResult::CONSUMED;
+}
+
+bool DiscordPlugin::sendRecap(DiscordPendingShot &shot) {
+    String msg = "\xE2\x9C\x85 Shot #" + String(shot.shotId) + " logged"; // ✅
+    if (shot.savedParts.empty()) {
+        msg += " \xE2\x80\x94 nothing recorded this time.";
+    } else {
+        msg += ": " + implode(shot.savedParts, ", ") + ".";
+    }
+    if (sendMessage(shot.channelId, msg).isEmpty()) {
+        ESP_LOGW("DiscordPlugin", "Failed to send recap for shot %u, will retry", shot.shotId);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Discord REST
+// ---------------------------------------------------------------------------------------------
 
 DiscordPlugin::HttpResult DiscordPlugin::discordRequest(const char *method, const String &path, const String &jsonBody) {
     HttpResult result;
@@ -250,8 +666,8 @@ DiscordPlugin::HttpResult DiscordPlugin::discordRequest(const char *method, cons
         }
         http.end();
 
-        // Always keep the latest status/body so callers (and the log) see the
-        // real final outcome even when the retry budget is exhausted on a 429.
+        // Always keep the latest status/body so callers (and the log) see the real final outcome
+        // even when the retry budget is exhausted on a 429.
         result.status = code;
         result.body = body;
 
@@ -302,7 +718,8 @@ String DiscordPlugin::getOrOpenDmChannel(const String &userId) {
 
 String DiscordPlugin::sendMessage(const String &channelId, const String &content) {
     JsonDocument doc(&psramAllocator);
-    doc["content"] = content;
+    // Final safety net for Discord's 2000-character limit (inputs are bounded upstream too).
+    doc["content"] = truncateUtf8(content, DISCORD_MAX_MESSAGE_BYTES);
     String body;
     serializeJson(doc, body);
 
@@ -317,152 +734,124 @@ String DiscordPlugin::sendMessage(const String &channelId, const String &content
     return resp["id"] | "";
 }
 
-int DiscordPlugin::pollReactionRating(const String &channelId, const String &messageId) {
-    HttpResult result = discordRequest("GET", "/channels/" + channelId + "/messages/" + messageId, "");
-    if (result.status < 200 || result.status >= 300) {
-        return 0;
-    }
-    JsonDocument doc(&psramAllocator);
-    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
-        return 0;
-    }
-    JsonArray reactions = doc["reactions"].as<JsonArray>();
-    if (reactions.isNull()) {
-        return 0;
-    }
-    // The bot pre-reacts with all five keycaps ("me" == true, count 1), so a user's click is any
-    // count above the bot's own contribution. If several are above baseline (user clicked twice),
-    // take the highest user count; ties resolve to the higher rating.
-    int best = 0;
-    int bestUserCount = 0;
-    for (JsonObject r : reactions) {
-        int count = r["count"] | 0;
-        bool me = r["me"] | false;
-        int userCount = count - (me ? 1 : 0);
-        if (userCount < 1) {
-            continue;
-        }
-        String name = r["emoji"]["name"] | "";
-        for (int i = 0; i < 5; i++) {
-            if (name == RATING_KEYCAPS[i] && userCount >= bestUserCount) {
-                bestUserCount = userCount;
-                best = i + 1;
-            }
-        }
-    }
-    return best;
-}
-
-void DiscordPlugin::pollPendingShot(DiscordPendingShot &shot) {
-    if (!shot.ratingSaved) {
-        int rating = pollReactionRating(shot.channelId, shot.messageId);
-        if (rating >= 1 && rating <= 5) {
-            JsonDocument patch(&psramAllocator);
-            patch["rating"] = rating;
-            // Only stop polling for a rating once it is actually persisted; on a
-            // failed write the next poll retries instead of silently losing it.
-            if (ShotHistory.applyNotesPatch(shot.shotId, patch)) {
-                shot.ratingSaved = true;
-            }
-        }
-    }
-
-    HttpResult result =
-        discordRequest("GET", "/channels/" + shot.channelId + "/messages?after=" + shot.lastSeenMessageId + "&limit=10", "");
-    if (result.status < 200 || result.status >= 300) {
-        return;
-    }
-    JsonDocument doc(&psramAllocator);
-    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
-        return;
-    }
-    JsonArray messages = doc.as<JsonArray>();
-    if (messages.isNull()) {
-        return;
-    }
-
-    // Discord returns newest-first; collect then walk in reverse for chronological order.
-    std::vector<JsonObject> ordered;
-    for (JsonObject m : messages) {
-        ordered.push_back(m);
-    }
-
-    Settings &settings = controller->getSettings();
-    for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
-        JsonObject m = *it;
-        String id = m["id"] | "";
-        String authorId = m["author"]["id"] | "";
-        if (!id.isEmpty()) {
-            shot.lastSeenMessageId = id;
-        }
-        if (authorId.isEmpty() || authorId != shot.userId) {
-            continue; // ignores other users and the bot's own messages (the ack reply)
-        }
-        String content = m["content"] | "";
-        if (content.isEmpty()) {
-            continue;
-        }
-
-        DiscordNotesPatch parsed;
-        bool aiHandled = settings.isDiscordAi() && applyAiParse(content, parsed);
-        if (!aiHandled) {
-            parsed = parseReply(content);
-        }
-
-        JsonDocument patchDoc(&psramAllocator);
-        String ackText;
-        buildPatchDocument(parsed, patchDoc, ackText);
-        if (patchDoc.as<JsonObjectConst>().size() > 0) {
-            if (ShotHistory.applyNotesPatch(shot.shotId, patchDoc)) {
-                if (parsed.hasRating) {
-                    shot.ratingSaved = true;
-                }
-            } else {
-                // Never acknowledge feedback that did not reach storage.
-                ackText = "⚠️ Couldn't save that (storage error) — please try again.";
-            }
-        }
-
-        String ackId = sendMessage(shot.channelId, ackText);
-        if (!ackId.isEmpty()) {
-            shot.lastSeenMessageId = ackId;
-        }
+void DiscordPlugin::addReaction(const String &channelId, const String &messageId, const char *emojiUrlEncoded) {
+    // PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me -> 204 No Content
+    HttpResult r = discordRequest("PUT", "/channels/" + channelId + "/messages/" + messageId + "/reactions/" +
+                                             emojiUrlEncoded + "/@me",
+                                  "");
+    if (r.status < 200 || r.status >= 300) {
+        ESP_LOGW("DiscordPlugin", "Failed to add reaction on message %s", messageId.c_str());
     }
 }
 
-void DiscordPlugin::buildPatchDocument(const DiscordNotesPatch &patch, JsonDocument &out, String &ackText) {
-    std::vector<String> ackParts;
+// ---------------------------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------------------------
+
+void DiscordPlugin::buildPatchDocument(const DiscordNotesPatch &patch, JsonDocument &out, std::vector<String> &savedParts) {
     if (patch.hasRating && patch.rating >= 1 && patch.rating <= 5) {
         out["rating"] = patch.rating;
-        ackParts.push_back("rating " + String(patch.rating));
+        savedParts.push_back("rating " + String(patch.rating));
     }
     if (patch.hasGrindSetting) {
         out["grindSetting"] = patch.grindSetting;
-        ackParts.push_back("grind " + patch.grindSetting);
+        savedParts.push_back("grind " + patch.grindSetting);
     }
     if (patch.hasDoseIn) {
         String formatted = String(patch.doseIn.toFloat(), 1);
         out["doseIn"] = formatted;
-        ackParts.push_back("in " + formatted + "g");
+        savedParts.push_back("in " + formatted + " g");
     }
     if (patch.hasDoseOut) {
         String formatted = String(patch.doseOut.toFloat(), 1);
         out["doseOut"] = formatted;
-        ackParts.push_back("out " + formatted + "g");
+        savedParts.push_back("out " + formatted + " g");
     }
     if (patch.hasBeanType) {
         out["beanType"] = patch.beanType;
-        ackParts.push_back("bean " + patch.beanType);
+        savedParts.push_back("bean " + patch.beanType);
     }
     if (patch.hasNotes) {
         out["notes"] = patch.notes;
-        ackParts.push_back("notes updated");
+        savedParts.push_back("note");
+    }
+}
+
+DiscordNotesPatch DiscordPlugin::parseReply(const String &reply, int currentStep) {
+    DiscordNotesPatch patch;
+
+    String normalized = reply;
+    normalized.replace("`", "");
+    normalized.replace("\r\n", "\n");
+    normalized.replace("\r", "\n");
+    normalized.replace("\n", "|");
+
+    std::vector<String> bareParts;
+    for (String segment : explode(normalized, '|')) {
+        segment.trim();
+        if (segment.isEmpty()) {
+            continue;
+        }
+
+        int colonPos = segment.indexOf(':');
+        if (colonPos < 0) {
+            bareParts.push_back(segment);
+            continue;
+        }
+
+        String key = segment.substring(0, colonPos);
+        String value = segment.substring(colonPos + 1);
+        key.trim();
+        key.toLowerCase();
+        value.trim();
+        if (value.isEmpty() || isPlaceholder(value)) {
+            continue;
+        }
+
+        if (key == "rating" || key == "rate" || key == "stars") {
+            int r = value.toInt();
+            if (r >= 1 && r <= 5) {
+                patch.rating = r;
+                patch.hasRating = true;
+            }
+        } else if (key == "grind" || key == "grinder") {
+            patch.grindSetting = value;
+            patch.hasGrindSetting = true;
+        } else if (key == "in" || key == "dose" || key == "dosein") {
+            patch.doseIn = value;
+            patch.hasDoseIn = true;
+        } else if (key == "out" || key == "yield" || key == "doseout") {
+            patch.doseOut = value;
+            patch.hasDoseOut = true;
+        } else if (key == "bean" || key == "beans" || key == "coffee") {
+            patch.beanType = value;
+            patch.hasBeanType = true;
+        } else if (key == "note" || key == "notes") {
+            patch.notes = patch.hasNotes ? patch.notes + ". " + value : value;
+            patch.hasNotes = true;
+        } else {
+            // Unknown key: keep the whole segment as free text.
+            bareParts.push_back(segment);
+        }
     }
 
-    ackText = "\u2705 Saved";
-    if (!ackParts.empty()) {
-        ackText += ": " + implode(ackParts, ", ");
+    // Anything without a key answers the step being asked. On the note step (or if the step's
+    // field was already given explicitly) it is note text.
+    if (!bareParts.empty()) {
+        String bare = implode(bareParts, ". ");
+        if (currentStep != DISCORD_STEP_NOTE && !patchHasStep(patch, currentStep) && !isPlaceholder(bare)) {
+            setStepValue(patch, currentStep, bare);
+            // A non-numeric answer on the rating step is not a rating; treat it as a note instead.
+            if (currentStep == DISCORD_STEP_RATING && !patch.hasRating) {
+                patch.notes = patch.hasNotes ? patch.notes + ". " + bare : bare;
+                patch.hasNotes = true;
+            }
+        } else if (!isPlaceholder(bare)) {
+            patch.notes = patch.hasNotes ? patch.notes + ". " + bare : bare;
+            patch.hasNotes = true;
+        }
     }
+    return patch;
 }
 
 bool DiscordPlugin::extractJsonFromAiContent(const String &content, JsonDocument &out) {
@@ -482,15 +871,17 @@ bool DiscordPlugin::extractJsonFromAiContent(const String &content, JsonDocument
     return deserializeJson(out, trimmed) == DeserializationError::Ok;
 }
 
-bool DiscordPlugin::applyAiParse(const String &reply, DiscordNotesPatch &patchOut) {
+bool DiscordPlugin::applyAiParse(const String &reply, int currentStep, DiscordNotesPatch &patchOut) {
     Settings &settings = controller->getSettings();
     String key = settings.getDiscordAiKey();
     if (key.isEmpty()) {
         return false;
     }
 
+    String userContent = "Field being asked: " + String(STEPS[currentStep].notesKey) + "\nUser reply: " + reply;
+
     // Try with response_format first; some OpenAI-compatible providers 400 on it, so retry once
-    // without it before giving up (falls back to the non-AI parser on total failure).
+    // without it before giving up (falls back to the keyword parser on total failure).
     for (int useResponseFormat = 1; useResponseFormat >= 0; useResponseFormat--) {
         JsonDocument reqDoc(&psramAllocator);
         reqDoc["model"] = settings.getDiscordAiModel();
@@ -504,7 +895,7 @@ bool DiscordPlugin::applyAiParse(const String &reply, DiscordNotesPatch &patchOu
         sys["content"] = AI_SYSTEM_PROMPT;
         JsonObject user = messages.add<JsonObject>();
         user["role"] = "user";
-        user["content"] = reply;
+        user["content"] = userContent;
 
         String body;
         serializeJson(reqDoc, body);
@@ -569,77 +960,10 @@ bool DiscordPlugin::applyAiParse(const String &reply, DiscordNotesPatch &patchOu
             patchOut.notes = parsedDoc["notes"].as<String>();
             patchOut.hasNotes = true;
         }
-        return true;
+        // Valid JSON with nothing usable ({} / all null) must fall back to the keyword parser,
+        // otherwise a bare answer like "3.5" would be swallowed.
+        return patchOut.hasRating || patchOut.hasGrindSetting || patchOut.hasDoseIn || patchOut.hasDoseOut ||
+               patchOut.hasBeanType || patchOut.hasNotes;
     }
     return false;
-}
-
-DiscordNotesPatch DiscordPlugin::parseReply(const String &reply) {
-    DiscordNotesPatch patch;
-
-    String normalized = reply;
-    normalized.replace("`", ""); // pasted template may include the ``` code fences
-    normalized.replace("\r\n", "\n");
-    normalized.replace("\r", "\n");
-    normalized.replace("\n", "|");
-
-    std::vector<String> noteParts;
-    for (String segment : explode(normalized, '|')) {
-        segment.trim();
-        if (segment.isEmpty()) {
-            continue;
-        }
-
-        int colonPos = segment.indexOf(':');
-        if (colonPos < 0) {
-            if (segment.length() == 1 && segment[0] >= '1' && segment[0] <= '5') {
-                patch.rating = segment.toInt();
-                patch.hasRating = true;
-            } else {
-                noteParts.push_back(segment);
-            }
-            continue;
-        }
-
-        String key = segment.substring(0, colonPos);
-        String value = segment.substring(colonPos + 1);
-        key.trim();
-        key.toLowerCase();
-        value.trim();
-        if (value.isEmpty() || isPlaceholder(value)) {
-            continue; // template line left unfilled
-        }
-
-        if (key == "rating" || key == "rate" || key == "stars") {
-            int r = value.toInt();
-            if (r >= 1 && r <= 5) {
-                patch.rating = r;
-                patch.hasRating = true;
-            }
-        } else if (key == "grind" || key == "grinder") {
-            patch.grindSetting = value;
-            patch.hasGrindSetting = true;
-        } else if (key == "in" || key == "dose" || key == "dosein") {
-            patch.doseIn = value;
-            patch.hasDoseIn = true;
-        } else if (key == "out" || key == "yield" || key == "doseout") {
-            patch.doseOut = value;
-            patch.hasDoseOut = true;
-        } else if (key == "bean" || key == "beans" || key == "coffee") {
-            patch.beanType = value;
-            patch.hasBeanType = true;
-        } else if (key == "note" || key == "notes") {
-            noteParts.push_back(value);
-        } else {
-            // Unknown key: keep the whole segment as free text rather than dropping it.
-            noteParts.push_back(segment);
-        }
-    }
-
-    if (!noteParts.empty()) {
-        patch.notes = implode(noteParts, ". ");
-        patch.hasNotes = true;
-    }
-
-    return patch;
 }

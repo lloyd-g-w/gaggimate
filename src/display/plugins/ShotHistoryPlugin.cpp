@@ -531,6 +531,11 @@ void ShotHistoryPlugin::handleRequest(JsonDocument &request, JsonDocument &respo
         }
         fs->remove("/h/" + paddedId + ".slog");
         fs->remove("/h/" + paddedId + ".json");
+        // Notes written via req:history:notes:save / applyNotesPatch use the unpadded id (the
+        // frontend sends shot.id verbatim), so remove that file too or it outlives the shot.
+        if (id != paddedId) {
+            fs->remove("/h/" + id + ".json");
+        }
 
         // Mark as deleted in index
         markIndexDeleted(id.toInt());
@@ -575,8 +580,15 @@ bool ShotHistoryPlugin::getLastNotes(uint32_t beforeId, JsonDocument &notes) {
     // bounded number of ids rather than assuming beforeId-1 exists.
     constexpr uint32_t MAX_LOOKBACK = 50;
     for (uint32_t i = 1; i <= MAX_LOOKBACK && i <= beforeId; i++) {
-        String sid = String(beforeId - i);
+        uint32_t candidate = beforeId - i;
+        String sid = String(candidate);
         if (!fs->exists("/h/" + sid + ".json")) {
+            continue;
+        }
+        // The index is the source of truth for deletion; a stale notes file (older firmware only
+        // removed the padded path on delete) must not resurface a deleted shot's values.
+        ShotIndexEntry entry{};
+        if (!getIndexEntry(candidate, entry) || (entry.flags & SHOT_FLAG_DELETED)) {
             continue;
         }
         notes.clear();

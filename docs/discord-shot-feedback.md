@@ -74,82 +74,86 @@ Changing the enable toggle, token or users takes effect after **Save & Restart**
 
 ## 3. Using it
 
-### 3.1 The message
+Feedback is collected **one field at a time**, each in its own message, in this order:
+**rating → grind → dose in → bean → note**. About 10 s after a shot is saved you get the summary,
+immediately followed by the first step.
 
-About 10 s after a shot is saved you receive a DM like:
+### 3.1 The summary
 
 ```
 ☕ Shot #142 — Classic
 ⏱ 28.4 s   ⚖️ 36.2 g   🌡 93 °C   ⏫ 9.1 bar   💧 1.8 ml/s
-Rate it by clicking a reaction below, then copy, edit and send:
-┌──────────────────────┐
-│ grind: 3.5           │
-│ in: 18.0             │
-│ bean: Ethiopia Guji  │
-│ note: <text>         │
-└──────────────────────┘
+Let's log it — answer each step, ↩️ reuses your last shot's value, ➡️ skips.
 ```
 
-The bot has **already reacted 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣** to the message — just click the one you want.
+(Which stats appear is configurable — *Include in message*.)
 
-The template is a copy-pastable code block, **pre-filled from your last shot that has notes**
-(grind, dose-in and bean usually carry over; the note never does). Fields that have no previous
-value keep a placeholder like `<grind>` — leave a line untouched or delete it and that field is
-simply not changed.
+### 3.2 The steps
 
-The plugin then watches that message for **30 minutes**, checking every **10 s**.
+Every step message shows what you entered for your **previous shot** (if anything) and already
+carries the reactions you need — just click:
 
-### 3.2 Answering — keyword mode (AI off)
+```
+Shot #142 · step 3/5
+# Dose in
 
-- **Rating**: click one of the pre-added **1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣** reactions (clicking a second one later
-  overrides), or reply with just a digit `1`–`5`.
-- **Everything else**: copy the template, edit the values, send. It is just `key: value` lines
-  (`|` also separates segments); pasting the ``` fences along with it is fine. Keys are
-  case-insensitive:
+Your last shot was *18.0 g* in.
+
+Send the dose for this shot as a message, e.g. 18
+
+↩️ reuse *18.0 g*   ➡️ skip
+```
+
+| Step | Answer by text | Reactions pre-added by the bot |
+|---|---|---|
+| **Rate this shot** | a number `1`–`5` | 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ ➡️ |
+| **Grind** | e.g. `3.5` | ↩️ (if a last value exists) ➡️ |
+| **Dose in** | e.g. `18` | ↩️ ➡️ |
+| **Bean** | e.g. `Ethiopia Guji` | ↩️ ➡️ |
+| **Note** | free text | ➡️ (notes are never reused) |
+
+- **↩️ reuse** saves your previous shot's value for this field and moves on.
+- **➡️ skip** saves nothing for this field and moves on.
+- Typing a value saves it and moves on. Clicking a rating later overrides an earlier click.
+- If you click both a value and ➡️, the value wins (skip is the likelier mis-click).
+
+After the last step the bot sends a recap, e.g. `✅ Shot #142 logged: rating 4, grind 3.5, in 18.0 g, bean Ethiopia Guji, note.`
+Each field is saved the moment you answer it, so you can stop halfway and keep what you entered.
+
+### 3.3 Answering more than one field at once
+
+A text reply may also contain `key: value` segments (separated by `|` or new lines) for other
+fields; the bot saves all of them and **skips the steps you already answered**. Keys are
+case-insensitive:
 
 | Key(s) | Saved as |
 |---|---|
 | `rating`, `rate`, `stars` | rating (1–5) |
 | `grind`, `grinder` | grindSetting |
 | `in`, `dose`, `dosein` | doseIn (g) |
-| `out`, `yield`, `doseout` | doseOut (g) |
+| `out`, `yield`, `doseout` | doseOut (g) — optional, the scale already provides yield |
 | `bean`, `beans`, `coffee` | beanType |
 | `note`, `notes` | notes |
 
-Text without a `key:` prefix is appended to **notes**. Several `note:` segments are joined.
-Values left as `<placeholders>` are ignored. `out` is optional — the machine already knows the
-yield from the scale; the ratio (`out ÷ in`) is recalculated automatically when both doses are known.
+Text without a key is the answer to the step being asked (on the note step, or a non-numeric
+answer on the rating step, it becomes the note). Backticks and `<placeholder>` tokens are ignored.
+Only the fields you mention are changed; the ratio (`out ÷ in`) is recalculated when both doses
+are known.
 
-Examples:
+### 3.4 AI mode
 
-```
-4
-grind: 3.5 | note: bright, a bit sour
-in: 18
-out: 36.2
-bean: Ethiopia Guji
-```
+Same step flow, same reactions. The difference is that each text reply goes to your configured
+model together with a hint naming the field being asked, so plain language works at any step:
 
-You can send several replies; each one patches only the fields it mentions. The bot answers
-with what it saved, e.g. `✅ Saved: rating 4, grind 3.5`.
+> on the note step: *"bit sour, ran fast — grinder was 3.2 with the Ethiopian, 18 in, solid 4 stars"*
 
-### 3.3 Answering — AI mode
-
-Same message (pre-added reactions + template), but the header invites plain language. Reply
-naturally, edit the template, or mix both:
-
-> pretty good but ran a bit fast, grinder on 3.2 with the Ethiopian, 18 in 38 out, 4 stars, nice acidity
-
-The reply is sent to your configured endpoint with a fixed system prompt that asks for a JSON
-object with `rating`, `grindSetting`, `doseIn`, `doseOut`, `beanType`, `notes` (null when not
-mentioned; the model is told never to invent values and to treat `<placeholder>` tokens as
-unfilled). **A rating written in the text ("4 stars", "solid 3/5") is parsed too**; anything
-about taste/experience becomes **notes**. Reactions still work for the rating either way.
+→ note saved, and grind 3.2, bean Ethiopian, dose in 18 and rating 4 are picked up too (the
+remaining steps are skipped automatically). A bare value is assigned to the field being asked.
 
 - Requests use `temperature: 0` and OpenAI JSON mode (`response_format: json_object`). If your
   provider rejects that with HTTP 400, the request is retried once without it, so Groq,
   OpenRouter, Ollama (`http://…/v1/chat/completions`), LM Studio etc. work too.
-- If the AI call fails or returns unusable JSON, the keyword parser (3.2) is used as a fallback.
+- If the AI call fails or returns unusable JSON, the keyword parser (3.3) is used as a fallback.
 - The API key is never written to the log.
 
 ---
@@ -174,13 +178,13 @@ ratings are retried on the next poll.
 
 - Discord's real-time Gateway (WebSocket) is too heavy for the ESP32, so the plugin uses the
   **REST API v10** with polling: `POST /users/@me/channels` (open DM, cached per user),
-  `POST /channels/{id}/messages` (send), `GET /channels/{id}/messages/{id}` (reactions),
+  `POST /channels/{id}/messages` (send), `PUT /channels/{id}/messages/{id}/reactions/{emoji}/@me` (pre-seeded reactions), `GET /channels/{id}/messages/{id}` (read reactions),
   `GET /channels/{id}/messages?after=…&limit=10` (replies; only *your* messages are processed,
   so the bot's own acks are skipped).
 - All networking runs on a dedicated FreeRTOS task; the shot-saved event only queues the shot id.
 - HTTPS uses the firmware's bundled CA store (no insecure mode). 8 s timeouts, 16 KB body cap,
   `429 retry_after` honoured (capped at 30 s, one retry).
-- State is in RAM only: a reboot during the 30-minute window ends that window.
+- State is in RAM only: a reboot during the 30-minute window ends that window (fields already answered stay saved).
 
 ---
 
@@ -196,7 +200,8 @@ Watch the display's serial log (`pio device monitor` or the sim log) for lines t
 | `Discord API … -> 429` | Rate limited; the plugin backs off automatically |
 | `AI parse request failed: <code>` | Wrong URL/key/model; `401` = key, `404` = URL, `400` = model/provider incompatibility (the `response_format` retry already happened) |
 | No DM at all | Plugin not enabled + restarted; WiFi down (nothing is sent until reconnected); no enabled user rows |
-| Reaction not picked up | Click one of the bot's own 1️⃣–5️⃣ reactions (only those keycaps count); polled every 10 s within 30 min of the shot |
-| `Failed to seed reaction N` | Bot lacks *Add Reactions*/*Send Messages* in the shared server, or was rate-limited; you can still add the reaction yourself |
+| Reaction not picked up | Click the bot's own reactions on the **current** step message (older steps are no longer watched); polled every 10 s within 30 min of the shot |
+| `Failed to add reaction on message …` | Rate-limited or DM blocked; you can still add the reaction yourself or answer by text |
+| `Failed to send step N …, will retry` | Transient network/rate-limit error; the step is re-sent on the next poll (10 s) |
 
 Settings storage keys (NVS): `dsc`, `dsc_t`, `dsc_u`, `dsc_f`, `dsc_ai`, `dsc_url`, `dsc_key`, `dsc_m`.
