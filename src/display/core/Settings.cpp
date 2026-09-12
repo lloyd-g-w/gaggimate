@@ -179,6 +179,12 @@ void Settings::setDiscordAiKey(const String &discordAiKey) { this->discordAiKey.
 
 void Settings::setDiscordAiModel(const String &discordAiModel) { this->discordAiModel.set(discordAiModel); }
 
+void Settings::setGaggibotUrl(const String &gaggibotUrl) { this->gaggibotUrl.set(gaggibotUrl); }
+
+void Settings::setGaggibotToken(const String &gaggibotToken) { this->gaggibotToken.set(gaggibotToken); }
+
+void Settings::setGaggibotDeviceId(const String &gaggibotDeviceId) { this->gaggibotDeviceId.set(gaggibotDeviceId); }
+
 void Settings::setMomentaryButtons(bool momentary_buttons) { momentaryButtons.set(momentary_buttons); }
 
 void Settings::setTimezone(String timezone) { this->timezone.set(timezone); }

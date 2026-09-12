@@ -45,6 +45,7 @@ export function PluginCard({
 }) {
   const [showDiscordToken, setShowDiscordToken] = useState(false);
   const [showDiscordAiKey, setShowDiscordAiKey] = useState(false);
+  const [showGaggibotToken, setShowGaggibotToken] = useState(false);
 
   const discordUsers = parseDiscordUsers(formData.discordUsers);
   const discordFieldsValue =
@@ -447,12 +448,79 @@ export function PluginCard({
         {formData.discord && (
           <div className='border-base-300 mt-4 space-y-4 border-t pt-4'>
             <p className='text-sm opacity-70'>
-              After every saved shot, GaggiMate will DM enabled Discord users a summary and
-              collect their rating, grind size, doses, bean and tasting notes via replies. Create
-              a bot at discord.com/developers, invite it to a server you share, enable Developer
-              Mode in Discord to copy your User ID.
+              After every saved shot, GaggiMate sends the shot to Discord and stores the feedback
+              back in shot history. External Gaggibot mode is recommended: Docker handles Discord,
+              reactions and optional AI without loading the display. Leave its URL empty only to
+              use the legacy direct-from-display mode.
             </p>
 
+            <div className='badge badge-primary'>
+              Mode: {formData.gaggibotUrl ? 'External Gaggibot (recommended)' : 'Direct from display (legacy)'}
+            </div>
+
+            <div className='form-control'>
+              <label htmlFor='gaggibotUrl' className='mb-2 block text-sm font-medium'>
+                Gaggibot URL
+              </label>
+              <input
+                id='gaggibotUrl'
+                name='gaggibotUrl'
+                type='url'
+                className='input input-bordered w-full'
+                placeholder='http://192.168.1.50:3000'
+                value={formData.gaggibotUrl ?? ''}
+                onChange={onChange('gaggibotUrl')}
+              />
+              <p className='mt-1 text-xs opacity-60'>
+                Base URL of the Docker container as reachable from this display. Save & Restart
+                after changing modes.
+              </p>
+            </div>
+
+            {formData.gaggibotUrl && (
+              <div className='space-y-4'>
+                <div className='form-control'>
+                  <label htmlFor='gaggibotToken' className='mb-2 block text-sm font-medium'>
+                    Bridge access token
+                  </label>
+                  <div className='join w-full'>
+                    <input
+                      id='gaggibotToken'
+                      name='gaggibotToken'
+                      type={showGaggibotToken ? 'text' : 'password'}
+                      className='input input-bordered join-item w-full'
+                      placeholder='Same value as GAGGIBOT_SHARED_TOKEN in Docker'
+                      value={formData.gaggibotToken ?? ''}
+                      onChange={onChange('gaggibotToken')}
+                    />
+                    <button
+                      type='button'
+                      className='btn btn-neutral join-item'
+                      onClick={() => setShowGaggibotToken(!showGaggibotToken)}
+                      aria-label={showGaggibotToken ? 'Hide bridge token' : 'Show bridge token'}
+                    >
+                      <FontAwesomeIcon icon={showGaggibotToken ? faEyeSlash : faEye} />
+                    </button>
+                  </div>
+                </div>
+                <div className='form-control'>
+                  <label htmlFor='gaggibotDeviceId' className='mb-2 block text-sm font-medium'>
+                    Device ID (optional)
+                  </label>
+                  <input
+                    id='gaggibotDeviceId'
+                    name='gaggibotDeviceId'
+                    type='text'
+                    className='input input-bordered w-full'
+                    placeholder='Empty uses gaggimate-&lt;Wi-Fi MAC&gt;'
+                    value={formData.gaggibotDeviceId ?? ''}
+                    onChange={onChange('gaggibotDeviceId')}
+                  />
+                </div>
+              </div>
+            )}
+
+            {!formData.gaggibotUrl && <>
             <div className='form-control'>
               <label htmlFor='discordBotToken' className='mb-2 block text-sm font-medium'>
                 Bot Token
@@ -613,6 +681,7 @@ export function PluginCard({
                 </div>
               )}
             </div>
+            </>}
           </div>
         )}
       </div>

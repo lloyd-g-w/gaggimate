@@ -1,0 +1,39 @@
+services:
+  gaggibot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gaggibot:local
+    container_name: gaggibot
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${GAGGIBOT_PORT:-3000}:3000"
+    environment:
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN in the Portainer stack environment}"
+      DISCORD_USER_IDS: "${DISCORD_USER_IDS:?Set DISCORD_USER_IDS in the Portainer stack environment}"
+      GAGGIBOT_SHARED_TOKEN: "${GAGGIBOT_SHARED_TOKEN:?Set GAGGIBOT_SHARED_TOKEN in the Portainer stack environment}"
+      PORT: "3000"
+      DATA_DIR: "/data"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      AI_URL: "${AI_URL:-}"
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_MODEL: "${AI_MODEL:-gpt-4o-mini}"
+    volumes:
+      - gaggibot-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  gaggibot-data:

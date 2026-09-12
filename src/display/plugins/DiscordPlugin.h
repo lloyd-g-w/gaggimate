@@ -11,6 +11,8 @@
 
 constexpr uint32_t DISCORD_POLL_INTERVAL_MS = 10000;
 constexpr uint32_t DISCORD_WINDOW_MS = 30 * 60 * 1000;
+constexpr uint32_t GAGGIBOT_POLL_INTERVAL_MS = 2000;
+constexpr uint32_t GAGGIBOT_MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 // Feedback is collected as a sequence of step messages, one field each, in this order.
 constexpr int DISCORD_STEP_RATING = 0;
@@ -86,6 +88,13 @@ class DiscordPlugin : public Plugin {
 
     static void loopTask(void *arg);
     void taskLoop();
+    void bridgeTaskLoop();
+    bool isBridgeMode() const;
+    String bridgeBaseUrl() const;
+    String bridgeDeviceId() const;
+    bool uploadBridgeShot(uint32_t shotId);
+    bool pollBridgeFeedback();
+    HttpResult bridgeRequest(const char *method, const String &url, const String &jsonBody);
 
     void enqueueShot(uint32_t shotId);
     std::vector<uint32_t> drainQueue();
@@ -122,6 +131,13 @@ class DiscordPlugin : public Plugin {
 
     std::mutex queueMutex;
     std::vector<uint32_t> pendingShotIds;
+
+    // Bridge-mode state is owned by the same task. Uploads are retried idempotently and feedback
+    // is acknowledged only after every preceding patch was applied successfully.
+    std::vector<uint32_t> bridgeUploadQueue;
+    uint32_t bridgeAfterEventId = 0;
+    uint32_t bridgeNextAttemptMs = 0;
+    uint32_t bridgeBackoffMs = GAGGIBOT_POLL_INTERVAL_MS;
 
     // Task-owned state; only ever touched from taskLoop() and its callees on the DiscordPlugin task.
     std::vector<DiscordPendingShot> pending;

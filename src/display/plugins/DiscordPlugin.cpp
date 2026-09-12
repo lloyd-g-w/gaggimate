@@ -14,6 +14,10 @@ extern const uint8_t x509_crt_imported_bundle_bin_start[] asm("_binary_x509_crt_
 
 namespace {
 constexpr uint32_t DISCORD_MAX_BODY_BYTES = 16384;
+constexpr uint32_t GAGGIBOT_MAX_BODY_BYTES = 16384;
+constexpr uint32_t GAGGIBOT_HTTP_TIMEOUT_MS = 8000;
+constexpr size_t GAGGIBOT_MAX_URL_BYTES = 512;
+constexpr size_t GAGGIBOT_MAX_DEVICE_ID_BYTES = 96;
 constexpr float DISCORD_MAX_RETRY_AFTER_S = 30.0f;
 constexpr const char *DISCORD_USER_AGENT = "GaggiMate (https://github.com/lloyd-g-w/gaggimate, 1.0)";
 constexpr const char *DISCORD_API_BASE = "https://discord.com/api/v10";
@@ -79,6 +83,26 @@ String truncateUtf8(const String &s, size_t maxBytes) {
     }
     return s.substring(0, cut) + "...";
 }
+
+String urlEncodeComponent(const String &value) {
+    static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+    String encoded;
+    encoded.reserve(value.length() * 3);
+    for (size_t i = 0; i < value.length(); i++) {
+        uint8_t c = static_cast<uint8_t>(value[i]);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+            c == '.' || c == '~') {
+            encoded += static_cast<char>(c);
+        } else {
+            encoded += '%';
+            encoded += HEX_DIGITS[c >> 4];
+            encoded += HEX_DIGITS[c & 0x0F];
+        }
+    }
+    return encoded;
+}
+
+bool timeReached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
 
 String stars(int rating) {
     String s;
@@ -150,7 +174,8 @@ void DiscordPlugin::setup(Controller *c, PluginManager *pm) {
     // This task performs mbedTLS handshakes (HTTPClient + WiFiClientSecure), ArduinoJson work and
     // String building. configMINIMAL_STACK_SIZE is only 768 words on the S3, so *8 (~6 KB) was far
     // too small and overflowed on the second HTTPS request. TLS alone needs ~8-10 KB of stack.
-    xTaskCreatePinnedToCore(loopTask, "DiscordPlugin::loop", DISCORD_TASK_STACK_BYTES, this, 1, &taskHandle, 0);
+    xTaskCreatePinnedToCore(loopTask, isBridgeMode() ? "Gaggibot::loop" : "DiscordPlugin::loop", DISCORD_TASK_STACK_BYTES,
+                            this, 1, &taskHandle, 0);
 }
 
 void DiscordPlugin::loopTask(void *arg) {
@@ -177,6 +202,10 @@ void DiscordPlugin::taskLoop() {
     if (WiFi.status() != WL_CONNECTED) {
         return;
     }
+    if (isBridgeMode()) {
+        bridgeTaskLoop();
+        return; // never contact Discord/OpenAI directly while an external bridge is configured
+    }
 
     for (uint32_t shotId : drainQueue()) {
         processNewShot(shotId);
@@ -199,6 +228,251 @@ void DiscordPlugin::taskLoop() {
         }
         ++it;
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// External Gaggibot bridge mode
+// ---------------------------------------------------------------------------------------------
+
+bool DiscordPlugin::isBridgeMode() const {
+    String configured = controller->getSettings().getGaggibotUrl();
+    configured.trim();
+    return !configured.isEmpty(); // invalid non-empty URLs fail closed; never fall through to direct Discord
+}
+
+String DiscordPlugin::bridgeBaseUrl() const {
+    String url = controller->getSettings().getGaggibotUrl();
+    url.trim();
+    while (url.endsWith("/")) {
+        url.remove(url.length() - 1);
+    }
+    if (url.length() > GAGGIBOT_MAX_URL_BYTES || !(url.startsWith("http://") || url.startsWith("https://"))) {
+        return "";
+    }
+    return url;
+}
+
+String DiscordPlugin::bridgeDeviceId() const {
+    String id = controller->getSettings().getGaggibotDeviceId();
+    id.trim();
+    if (id.isEmpty()) {
+        id = "gaggimate-" + WiFi.macAddress();
+        id.replace(":", "");
+        id.toLowerCase();
+    }
+    return truncateUtf8(id, GAGGIBOT_MAX_DEVICE_ID_BYTES);
+}
+
+void DiscordPlugin::bridgeTaskLoop() {
+    for (uint32_t shotId : drainQueue()) {
+        if (std::find(bridgeUploadQueue.begin(), bridgeUploadQueue.end(), shotId) == bridgeUploadQueue.end()) {
+            if (bridgeUploadQueue.size() >= 16) {
+                ESP_LOGW("DiscordPlugin", "Gaggibot upload queue full; dropping oldest shot");
+                bridgeUploadQueue.erase(bridgeUploadQueue.begin());
+            }
+            bridgeUploadQueue.push_back(shotId);
+        }
+    }
+
+    uint32_t now = millis();
+    if (!timeReached(now, bridgeNextAttemptMs)) {
+        return;
+    }
+
+    bool ok = true;
+    // Preserve ordering and stop on the first failure. POST /shots is idempotent by device + shot id.
+    while (!bridgeUploadQueue.empty()) {
+        if (!uploadBridgeShot(bridgeUploadQueue.front())) {
+            ok = false;
+            break;
+        }
+        bridgeUploadQueue.erase(bridgeUploadQueue.begin());
+    }
+    if (ok) {
+        ok = pollBridgeFeedback();
+    }
+
+    if (ok) {
+        bridgeBackoffMs = GAGGIBOT_POLL_INTERVAL_MS;
+    } else {
+        bridgeBackoffMs = std::min(bridgeBackoffMs * 2, GAGGIBOT_MAX_BACKOFF_MS);
+    }
+    bridgeNextAttemptMs = now + bridgeBackoffMs;
+}
+
+bool DiscordPlugin::uploadBridgeShot(uint32_t shotId) {
+    ShotIndexEntry entry{};
+    if (!ShotHistory.getIndexEntry(shotId, entry) || (entry.flags & SHOT_FLAG_DELETED)) {
+        ESP_LOGW("DiscordPlugin", "Cannot upload missing/deleted shot %u to Gaggibot", shotId);
+        return true; // permanent local condition: do not wedge later shots
+    }
+
+    JsonDocument doc(&psramAllocator);
+    doc["deviceId"] = bridgeDeviceId();
+    JsonObject shot = doc["shot"].to<JsonObject>();
+    shot["id"] = shotId;
+    shot["profile"] = entry.profileName;
+    shot["duration"] = entry.duration / 1000.0f;
+    shot["weight"] = entry.volume / 10.0f;
+    shot["temperature"] = entry.avgTemp / 10.0f;
+    shot["pressure"] = entry.maxPressure / 10.0f;
+    shot["flow"] = entry.avgFlow / 100.0f;
+
+    JsonDocument previousDoc(&psramAllocator);
+    ShotHistory.getLastNotes(shotId, previousDoc);
+    JsonObject previous = doc["previous"].to<JsonObject>();
+    static constexpr const char *PREVIOUS_KEYS[] = {"rating", "grindSetting", "doseIn", "doseOut", "beanType", "notes"};
+    for (const char *key : PREVIOUS_KEYS) {
+        JsonVariantConst value = previousDoc[key];
+        // Omit unknown fields entirely: the bridge validates `previous` against a strict schema and
+        // an explicit null would be rejected as an invalid number/string.
+        if (!value.isNull()) {
+            previous[key] = value;
+        }
+    }
+
+    String body;
+    serializeJson(doc, body);
+    HttpResult result = bridgeRequest("POST", bridgeBaseUrl() + "/api/v1/shots", body);
+    if (result.status < 200 || result.status >= 300) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot shot upload failed for shot %u -> %d", shotId, result.status);
+        return false;
+    }
+    ESP_LOGI("DiscordPlugin", "Uploaded shot %u to Gaggibot", shotId);
+    return true;
+}
+
+bool DiscordPlugin::pollBridgeFeedback() {
+    String endpoint = bridgeBaseUrl() + "/api/v1/feedback/" + urlEncodeComponent(bridgeDeviceId());
+    HttpResult result = bridgeRequest("GET", endpoint + "?after=" + String(bridgeAfterEventId), "");
+    if (result.status < 200 || result.status >= 300) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot feedback poll failed -> %d", result.status);
+        return false;
+    }
+
+    JsonDocument doc(&psramAllocator);
+    if (deserializeJson(doc, result.body) != DeserializationError::Ok) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot returned invalid feedback JSON");
+        return false;
+    }
+    JsonArrayConst events = doc.is<JsonArray>() ? doc.as<JsonArrayConst>() : doc["events"].as<JsonArrayConst>();
+    // Our cursor is RAM-only, so a reboot would replay every patch the bridge has ever queued. Adopt
+    // the durable acknowledgement watermark the bridge reports instead.
+    uint32_t cursor = bridgeAfterEventId;
+    uint32_t serverWatermark = doc["through"] | 0u;
+    if (serverWatermark > cursor) {
+        cursor = serverWatermark;
+        bridgeAfterEventId = cursor;
+    }
+    if (events.isNull() || events.size() == 0) {
+        return true;
+    }
+
+    uint32_t maxAppliedId = cursor;
+    static constexpr const char *PATCH_KEYS[] = {"rating", "grindSetting", "doseIn", "doseOut", "beanType", "notes"};
+    for (JsonObjectConst event : events) {
+        uint32_t eventId = event["id"] | 0;
+        uint32_t shotId = event["shotId"] | 0;
+        JsonObjectConst incoming = event["patch"].as<JsonObjectConst>();
+        if (eventId <= cursor) {
+            continue; // already applied and acknowledged on an earlier run
+        }
+        if (eventId == 0 || shotId == 0 || incoming.isNull()) {
+            ESP_LOGW("DiscordPlugin", "Gaggibot feedback event is malformed; leaving it unacknowledged");
+            return false;
+        }
+
+        JsonDocument patch(&psramAllocator);
+        JsonObject sanitized = patch.to<JsonObject>();
+        for (const char *key : PATCH_KEYS) {
+            JsonVariantConst value = incoming[key];
+            if (!value.isNull()) {
+                sanitized[key] = value;
+            }
+        }
+        if (sanitized.size() > 0 && !ShotHistory.applyNotesPatch(shotId, patch)) {
+            ESP_LOGW("DiscordPlugin", "Failed to apply Gaggibot feedback event %u", eventId);
+            return false;
+        }
+        maxAppliedId = eventId;
+    }
+
+    if (maxAppliedId == cursor) {
+        return true;
+    }
+    JsonDocument ackDoc(&psramAllocator);
+    ackDoc["through"] = maxAppliedId;
+    String ackBody;
+    serializeJson(ackDoc, ackBody);
+    HttpResult ack = bridgeRequest("POST", endpoint + "/ack", ackBody);
+    if (ack.status < 200 || ack.status >= 300) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot feedback acknowledgement failed -> %d", ack.status);
+        return false; // patches are idempotent and will be replayed on the next poll
+    }
+    bridgeAfterEventId = maxAppliedId;
+    return true;
+}
+
+DiscordPlugin::HttpResult DiscordPlugin::bridgeRequest(const char *method, const String &url, const String &jsonBody) {
+    HttpResult result;
+    if (url.isEmpty() || !(url.startsWith("http://") || url.startsWith("https://")) ||
+        url.length() > GAGGIBOT_MAX_URL_BYTES + 160 || jsonBody.length() > GAGGIBOT_MAX_BODY_BYTES) {
+        result.status = -2;
+        return result;
+    }
+
+    HTTPClient http;
+    http.setTimeout(GAGGIBOT_HTTP_TIMEOUT_MS);
+    WiFiClient plainClient;
+    bool begun = url.startsWith("https://") ? http.begin(wifiClient, url) : http.begin(plainClient, url);
+    if (!begun) {
+        return result;
+    }
+    String token = controller->getSettings().getGaggibotToken();
+    if (!token.isEmpty()) {
+        http.addHeader("Authorization", "Bearer " + token);
+    }
+    http.addHeader("Accept", "application/json");
+    if (strcmp(method, "POST") == 0) {
+        http.addHeader("Content-Type", "application/json");
+        result.status = http.POST(jsonBody);
+    } else {
+        result.status = http.GET();
+    }
+
+    int contentLength = http.getSize();
+    if (contentLength > static_cast<int>(GAGGIBOT_MAX_BODY_BYTES)) {
+        ESP_LOGW("DiscordPlugin", "Gaggibot response exceeded %u bytes", GAGGIBOT_MAX_BODY_BYTES);
+        result.status = -3;
+    } else if (result.status != 204 && result.status > 0) {
+        if (contentLength >= 0) {
+            result.body = http.getString();
+        } else {
+            // Bound chunked/unknown-length responses instead of allowing HTTPClient::getString()
+            // to grow a String without limit.
+            WiFiClient *stream = http.getStreamPtr();
+            uint32_t deadline = millis() + GAGGIBOT_HTTP_TIMEOUT_MS;
+            char buffer[256];
+            while ((http.connected() || stream->available()) && !timeReached(millis(), deadline)) {
+                size_t available = stream->available();
+                if (available == 0) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    continue;
+                }
+                size_t take = std::min(available, sizeof(buffer));
+                if (result.body.length() + take > GAGGIBOT_MAX_BODY_BYTES) {
+                    result.status = -3;
+                    break;
+                }
+                size_t read = stream->readBytes(buffer, take);
+                for (size_t i = 0; i < read; i++) {
+                    result.body += buffer[i];
+                }
+            }
+        }
+    }
+    http.end();
+    return result;
 }
 
 // ---------------------------------------------------------------------------------------------

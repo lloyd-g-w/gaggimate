@@ -725,6 +725,12 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setDiscordAiKey(request->arg("discordAiKey"));
             if (request->hasArg("discordAiModel"))
                 settings->setDiscordAiModel(request->arg("discordAiModel"));
+            if (request->hasArg("gaggibotUrl"))
+                settings->setGaggibotUrl(request->arg("gaggibotUrl"));
+            if (request->hasArg("gaggibotToken"))
+                settings->setGaggibotToken(request->arg("gaggibotToken"));
+            if (request->hasArg("gaggibotDeviceId"))
+                settings->setGaggibotDeviceId(request->arg("gaggibotDeviceId"));
             settings->setMomentaryButtons(request->hasArg("momentaryButtons"));
             settings->setDelayAdjust(request->hasArg("delayAdjust"));
             if (request->hasArg("brewDelay"))
@@ -849,6 +855,9 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["discordAiUrl"] = settings.getDiscordAiUrl();
     doc["discordAiKey"] = settings.getDiscordAiKey();
     doc["discordAiModel"] = settings.getDiscordAiModel();
+    doc["gaggibotUrl"] = settings.getGaggibotUrl();
+    doc["gaggibotToken"] = settings.getGaggibotToken();
+    doc["gaggibotDeviceId"] = settings.getGaggibotDeviceId();
     doc["pid"] = settings.getPid();
     doc["pumpModelCoeffs"] = settings.getPumpModelCoeffs();
     doc["pumpSlipCoeffs"] = settings.getPumpSlipCoeffs();

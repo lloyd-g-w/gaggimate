@@ -8,7 +8,21 @@ the **Shot Analyzer** and **Statistics** exactly as if you had typed it into the
 Optionally, an **AI mode** lets you answer in plain language and has any OpenAI-compatible
 model extract the structured fields for you.
 
-> The plugin runs entirely on the display (ESP32). No companion server is needed.
+It can run in two modes, chosen on the plugin card:
+
+| Mode | Where the work happens | When to use it |
+|---|---|---|
+| **External Gaggibot** (recommended) | A small Docker container on your network ([gaggibot/](../gaggibot/)) talks to Discord over a Gateway connection; the display only uploads the shot and polls for the answers | Faster, more reliable, keeps the Discord token off the display |
+| **Direct from display** (legacy) | The display itself calls the Discord REST API | No extra host needed |
+
+Set the **Gaggibot URL** on the plugin card to switch to the container; leave it empty for direct
+mode. The conversation is identical in both modes — see [gaggibot/README.md](../gaggibot/README.md)
+for deploying the container.
+
+In **External Gaggibot** mode the display makes only two kinds of request: one shot upload per
+shot, and a 2-second poll for the feedback queue. Discord is contacted only by the container, which
+is where the bot token and any AI key live, so the sections below about the Discord application
+apply to the container's environment instead of the plugin card.
 
 ---
 
@@ -22,7 +36,8 @@ your own Discord account.
 1. Open <https://discord.com/developers/applications> → **New Application** → give it a name (e.g. `GaggiMate`).
 2. Left menu → **Bot** → **Reset Token** → copy the token. It is shown **only once**; you can
    always reset it again later (the old one stops working).
-   - No *Privileged Gateway Intents* are needed. The plugin uses the REST API only.
+   - **Direct from display** needs no *Privileged Gateway Intents* (REST only). The **Gaggibot**
+     container needs the **Message Content Intent** enabled so it can read your DM replies.
 
 ### 1.2 Give it the `bot` scope and install it to a server you are in
 
@@ -32,7 +47,8 @@ you and the bot is perfect.
 1. Left menu → **Installation**.
 2. Under **Default Install Settings → Guild Install → Scopes** tick **`bot`** (leave
    `applications.commands` if it is there; it is harmless but unused).
-3. In the **Permissions** box that appears, tick **Send Messages** (that is all the plugin needs).
+3. In the **Permissions** box that appears, tick **Send Messages** and **Add Reactions** (the plugin
+   seeds the reaction buttons itself). In **Gaggibot** mode also tick **Read Message History**.
 4. **Save Changes**, then copy the **Install Link** (it now contains `scope=bot…&permissions=2048`).
 5. Open that link in a browser → **Add to Server** → choose your server → **Authorise**.
 6. Check the bot now appears in the server's member list.

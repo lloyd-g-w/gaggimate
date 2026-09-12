@@ -114,6 +114,9 @@ class Settings {
     String getDiscordAiUrl() const { return discordAiUrl.get(); }
     String getDiscordAiKey() const { return discordAiKey.get(); }
     String getDiscordAiModel() const { return discordAiModel.get(); }
+    String getGaggibotUrl() const { return gaggibotUrl.get(); }
+    String getGaggibotToken() const { return gaggibotToken.get(); }
+    String getGaggibotDeviceId() const { return gaggibotDeviceId.get(); }
     bool isMomentaryButtons() const { return momentaryButtons.get(); }
     String getTimezone() const { return timezone.get(); }
     bool isClock24hFormat() const { return clock24hFormat.get(); }
@@ -210,6 +213,9 @@ class Settings {
     void setDiscordAiUrl(const String &discordAiUrl);
     void setDiscordAiKey(const String &discordAiKey);
     void setDiscordAiModel(const String &discordAiModel);
+    void setGaggibotUrl(const String &gaggibotUrl);
+    void setGaggibotToken(const String &gaggibotToken);
+    void setGaggibotDeviceId(const String &gaggibotDeviceId);
     void setMomentaryButtons(bool momentary_buttons);
     void setTimezone(String timezone);
     void setClockFormat(bool format_24h);
@@ -302,6 +308,10 @@ class Settings {
     Property<String> discordAiUrl{registry, "dsc_url", "https://api.openai.com/v1/chat/completions"};
     Property<String> discordAiKey{registry, "dsc_key", ""};
     Property<String> discordAiModel{registry, "dsc_m", "gpt-4o-mini"};
+    // Empty URL preserves the legacy direct-to-Discord mode. Keys are <= Preferences' 15-char limit.
+    Property<String> gaggibotUrl{registry, "ggb_url", ""};
+    Property<String> gaggibotToken{registry, "ggb_tok", ""};
+    Property<String> gaggibotDeviceId{registry, "ggb_dev", ""};
     Property<bool> momentaryButtons{registry, "mb", false};
     Property<String> timezone{registry, "tz", DEFAULT_TIMEZONE};
     Property<bool> clock24hFormat{registry, "clk_24h", true};
