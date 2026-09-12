@@ -43,6 +43,8 @@ class ShotHistoryPlugin : public Plugin {
     // doseIn and doseOut are present, save the notes file, and update the index rating/volume
     // exactly like req:history:notes:save does. Returns false if the notes file could not be written.
     bool applyNotesPatch(uint32_t id, const JsonDocument &patch);
+    // Notes of the most recent shot before `beforeId` (bounded scan; ids may have gaps). Returns false if none.
+    bool getLastNotes(uint32_t beforeId, JsonDocument &notes);
 
   private:
     // Index helper functions

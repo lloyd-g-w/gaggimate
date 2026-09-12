@@ -570,6 +570,24 @@ void ShotHistoryPlugin::handleRequest(JsonDocument &request, JsonDocument &respo
     }
 }
 
+bool ShotHistoryPlugin::getLastNotes(uint32_t beforeId, JsonDocument &notes) {
+    // Notes files use the unpadded id (see applyNotesPatch). Deleted shots leave gaps, so walk back a
+    // bounded number of ids rather than assuming beforeId-1 exists.
+    constexpr uint32_t MAX_LOOKBACK = 50;
+    for (uint32_t i = 1; i <= MAX_LOOKBACK && i <= beforeId; i++) {
+        String sid = String(beforeId - i);
+        if (!fs->exists("/h/" + sid + ".json")) {
+            continue;
+        }
+        notes.clear();
+        loadNotes(sid, notes);
+        if (!notes.isNull() && notes.as<JsonObjectConst>().size() > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ShotHistoryPlugin::saveNotes(const String &id, const JsonDocument &notes) {
     File file = fs->open("/h/" + id + ".json", FILE_WRITE);
     if (!file) {

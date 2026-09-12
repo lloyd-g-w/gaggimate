@@ -22,7 +22,15 @@ constexpr const char *AI_SYSTEM_PROMPT =
     "You extract espresso shot feedback. Return ONLY a JSON object with keys rating (integer 1-5 or null), "
     "grindSetting (string or null), doseIn (number grams or null), doseOut (number grams or null), beanType (string "
     "or null), notes (string or null: everything else the user said about taste/experience, concise). Never invent "
-    "values.";
+    "values. The user may paste a 'key: value' template; any value that is still an angle-bracket placeholder such "
+    "as <grind> or <text> was not filled in and must be treated as null.";
+
+// URL-encoded UTF-8 of the keycap emoji ("1\uFE0F\u20E3" ...), for the reactions endpoint path.
+const char *const RATING_KEYCAPS_URLENC[5] = {"1%EF%B8%8F%E2%83%A3", "2%EF%B8%8F%E2%83%A3", "3%EF%B8%8F%E2%83%A3",
+                                              "4%EF%B8%8F%E2%83%A3", "5%EF%B8%8F%E2%83%A3"};
+
+// "<grind>" style tokens from the copy-paste template mean "not filled in".
+static bool isPlaceholder(const String &value) { return value.length() >= 2 && value.startsWith("<") && value.endsWith(">"); }
 
 // Discord keycap reaction emoji for a 1-5 rating, indexed 0-4.
 const char *const RATING_KEYCAPS[5] = {"1\xEF\xB8\x8F\xE2\x83\xA3", "2\xEF\xB8\x8F\xE2\x83\xA3", "3\xEF\xB8\x8F\xE2\x83\xA3",
@@ -116,6 +124,7 @@ void DiscordPlugin::processNewShot(uint32_t shotId) {
             ESP_LOGW("DiscordPlugin", "Failed to send shot summary for shot %u", shotId);
             continue;
         }
+        seedRatingReactions(channelId, messageId);
 
         DiscordPendingShot p;
         p.shotId = shotId;
@@ -162,15 +171,49 @@ String DiscordPlugin::buildSummaryMessage(uint32_t shotId) {
         }
     }
 
+    // Copy-pastable template, pre-filled from the last shot that has notes. Grind, dose-in and bean
+    // usually carry over between shots; the note never does. Unfilled fields keep an <angle-bracket>
+    // placeholder, which both parsers ignore.
+    JsonDocument last(&psramAllocator);
+    bool hasLast = ShotHistory.getLastNotes(shotId, last);
+    auto pick = [&](const char *key, const char *placeholder) -> String {
+        if (hasLast && last[key].is<const char *>()) {
+            String v = last[key].as<String>();
+            v.trim();
+            if (!v.isEmpty() && !isPlaceholder(v)) {
+                return v;
+            }
+        }
+        return String(placeholder);
+    };
+
     if (settings.isDiscordAi()) {
-        msg += "Rate it: react 1\xEF\xB8\x8F\xE2\x83\xA3\u20135\xEF\xB8\x8F\xE2\x83\xA3 or just tell me how it was "
-               "\u2014 grind size, doses, beans, tasting notes in plain language.";
+        msg += "Rate it by clicking a reaction below, then just tell me how it was \u2014 grind, dose, beans, "
+               "tasting notes in plain language (or edit the template):\n";
     } else {
-        msg += "Rate it: react 1\xEF\xB8\x8F\xE2\x83\xA3\u20135\xEF\xB8\x8F\xE2\x83\xA3 or reply. Reply with lines "
-               "like:\n";
-        msg += "grind: 3.5 | in: 18 | out: 36 | bean: <name> | note: <text>";
+        msg += "Rate it by clicking a reaction below, then copy, edit and send:\n";
     }
+    msg += "```\n";
+    msg += "grind: " + pick("grindSetting", "<grind>") + "\n";
+    msg += "in: " + pick("doseIn", "<g>") + "\n";
+    msg += "bean: " + pick("beanType", "<bean>") + "\n";
+    msg += "note: <text>\n";
+    msg += "```";
     return msg;
+}
+
+void DiscordPlugin::seedRatingReactions(const String &channelId, const String &messageId) {
+    // PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me — one call per keycap. Discord rate-limits
+    // reactions tightly (~1 per 250 ms per channel); pace them and let discordRequest handle 429s.
+    for (int i = 0; i < 5; i++) {
+        HttpResult r = discordRequest(
+            "PUT", "/channels/" + channelId + "/messages/" + messageId + "/reactions/" + RATING_KEYCAPS_URLENC[i] + "/@me",
+            "");
+        if (r.status < 200 || r.status >= 300) {
+            ESP_LOGW("DiscordPlugin", "Failed to seed reaction %d for message %s", i + 1, messageId.c_str());
+        }
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
 }
 
 DiscordPlugin::HttpResult DiscordPlugin::discordRequest(const char *method, const String &path, const String &jsonBody) {
@@ -193,7 +236,14 @@ DiscordPlugin::HttpResult DiscordPlugin::discordRequest(const char *method, cons
         http.addHeader("Content-Type", "application/json");
         http.addHeader("User-Agent", DISCORD_USER_AGENT);
 
-        int code = strcmp(method, "POST") == 0 ? http.POST(jsonBody) : http.GET();
+        int code;
+        if (strcmp(method, "POST") == 0) {
+            code = http.POST(jsonBody);
+        } else if (strcmp(method, "PUT") == 0) {
+            code = http.PUT(jsonBody);
+        } else {
+            code = http.GET();
+        }
         String body;
         if (http.getSize() <= static_cast<int>(DISCORD_MAX_BODY_BYTES)) {
             body = http.getString();
@@ -280,19 +330,27 @@ int DiscordPlugin::pollReactionRating(const String &channelId, const String &mes
     if (reactions.isNull()) {
         return 0;
     }
+    // The bot pre-reacts with all five keycaps ("me" == true, count 1), so a user's click is any
+    // count above the bot's own contribution. If several are above baseline (user clicked twice),
+    // take the highest user count; ties resolve to the higher rating.
+    int best = 0;
+    int bestUserCount = 0;
     for (JsonObject r : reactions) {
         int count = r["count"] | 0;
-        if (count < 1) {
+        bool me = r["me"] | false;
+        int userCount = count - (me ? 1 : 0);
+        if (userCount < 1) {
             continue;
         }
         String name = r["emoji"]["name"] | "";
         for (int i = 0; i < 5; i++) {
-            if (name == RATING_KEYCAPS[i]) {
-                return i + 1;
+            if (name == RATING_KEYCAPS[i] && userCount >= bestUserCount) {
+                bestUserCount = userCount;
+                best = i + 1;
             }
         }
     }
-    return 0;
+    return best;
 }
 
 void DiscordPlugin::pollPendingShot(DiscordPendingShot &shot) {
@@ -520,6 +578,7 @@ DiscordNotesPatch DiscordPlugin::parseReply(const String &reply) {
     DiscordNotesPatch patch;
 
     String normalized = reply;
+    normalized.replace("`", ""); // pasted template may include the ``` code fences
     normalized.replace("\r\n", "\n");
     normalized.replace("\r", "\n");
     normalized.replace("\n", "|");
@@ -547,6 +606,9 @@ DiscordNotesPatch DiscordPlugin::parseReply(const String &reply) {
         key.trim();
         key.toLowerCase();
         value.trim();
+        if (value.isEmpty() || isPlaceholder(value)) {
+            continue; // template line left unfilled
+        }
 
         if (key == "rating" || key == "rate" || key == "stars") {
             int r = value.toInt();

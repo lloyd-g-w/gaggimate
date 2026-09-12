@@ -81,16 +81,30 @@ About 10 s after a shot is saved you receive a DM like:
 ```
 ☕ Shot #142 — Classic
 ⏱ 28.4 s   ⚖️ 36.2 g   🌡 93 °C   ⏫ 9.1 bar   💧 1.8 ml/s
-Rate it: react 1️⃣–5️⃣ or reply. Reply with lines like:
-grind: 3.5 | in: 18 | out: 36 | bean: <name> | note: <text>
+Rate it by clicking a reaction below, then copy, edit and send:
+┌──────────────────────┐
+│ grind: 3.5           │
+│ in: 18.0             │
+│ bean: Ethiopia Guji  │
+│ note: <text>         │
+└──────────────────────┘
 ```
+
+The bot has **already reacted 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣** to the message — just click the one you want.
+
+The template is a copy-pastable code block, **pre-filled from your last shot that has notes**
+(grind, dose-in and bean usually carry over; the note never does). Fields that have no previous
+value keep a placeholder like `<grind>` — leave a line untouched or delete it and that field is
+simply not changed.
 
 The plugin then watches that message for **30 minutes**, checking every **10 s**.
 
 ### 3.2 Answering — keyword mode (AI off)
 
-- **Rating**: react to the message with **1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣**, or reply with just a digit `1`–`5`.
-- **Everything else**: reply with `key: value` segments separated by `|` or new lines. Keys are
+- **Rating**: click one of the pre-added **1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣** reactions (clicking a second one later
+  overrides), or reply with just a digit `1`–`5`.
+- **Everything else**: copy the template, edit the values, send. It is just `key: value` lines
+  (`|` also separates segments); pasting the ``` fences along with it is fine. Keys are
   case-insensitive:
 
 | Key(s) | Saved as |
@@ -103,7 +117,8 @@ The plugin then watches that message for **30 minutes**, checking every **10 s**
 | `note`, `notes` | notes |
 
 Text without a `key:` prefix is appended to **notes**. Several `note:` segments are joined.
-The ratio (`out ÷ in`) is recalculated automatically when both doses are known.
+Values left as `<placeholders>` are ignored. `out` is optional — the machine already knows the
+yield from the scale; the ratio (`out ÷ in`) is recalculated automatically when both doses are known.
 
 Examples:
 
@@ -120,14 +135,16 @@ with what it saved, e.g. `✅ Saved: rating 4, grind 3.5`.
 
 ### 3.3 Answering — AI mode
 
-The summary ends with *"…or just tell me how it was"*. Reply naturally:
+Same message (pre-added reactions + template), but the header invites plain language. Reply
+naturally, edit the template, or mix both:
 
-> pretty good but ran a bit fast, grinder on 3.2 with the Ethiopian, 18 in 38 out, nice acidity
+> pretty good but ran a bit fast, grinder on 3.2 with the Ethiopian, 18 in 38 out, 4 stars, nice acidity
 
 The reply is sent to your configured endpoint with a fixed system prompt that asks for a JSON
 object with `rating`, `grindSetting`, `doseIn`, `doseOut`, `beanType`, `notes` (null when not
-mentioned; the model is told never to invent values). Anything about taste/experience becomes
-**notes**. Reactions still work for the rating.
+mentioned; the model is told never to invent values and to treat `<placeholder>` tokens as
+unfilled). **A rating written in the text ("4 stars", "solid 3/5") is parsed too**; anything
+about taste/experience becomes **notes**. Reactions still work for the rating either way.
 
 - Requests use `temperature: 0` and OpenAI JSON mode (`response_format: json_object`). If your
   provider rejects that with HTTP 400, the request is retried once without it, so Groq,
@@ -179,6 +196,7 @@ Watch the display's serial log (`pio device monitor` or the sim log) for lines t
 | `Discord API … -> 429` | Rate limited; the plugin backs off automatically |
 | `AI parse request failed: <code>` | Wrong URL/key/model; `401` = key, `404` = URL, `400` = model/provider incompatibility (the `response_format` retry already happened) |
 | No DM at all | Plugin not enabled + restarted; WiFi down (nothing is sent until reconnected); no enabled user rows |
-| Reaction not picked up | Only the **keycap** emojis 1️⃣–5️⃣ count; reactions are checked every 10 s within 30 min of the shot |
+| Reaction not picked up | Click one of the bot's own 1️⃣–5️⃣ reactions (only those keycaps count); polled every 10 s within 30 min of the shot |
+| `Failed to seed reaction N` | Bot lacks *Add Reactions*/*Send Messages* in the shared server, or was rate-limited; you can still add the reaction yourself |
 
 Settings storage keys (NVS): `dsc`, `dsc_t`, `dsc_u`, `dsc_f`, `dsc_ai`, `dsc_url`, `dsc_key`, `dsc_m`.

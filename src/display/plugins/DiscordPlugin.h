@@ -75,6 +75,8 @@ class DiscordPlugin : public Plugin {
     HttpResult discordRequest(const char *method, const String &path, const String &jsonBody);
 
     int pollReactionRating(const String &channelId, const String &messageId);
+    // Pre-react 1-5 keycaps on the summary so the user only has to click one.
+    void seedRatingReactions(const String &channelId, const String &messageId);
 
     bool applyAiParse(const String &reply, DiscordNotesPatch &patchOut);
     static bool extractJsonFromAiContent(const String &content, JsonDocument &out);
