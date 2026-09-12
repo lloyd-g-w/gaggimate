@@ -10,16 +10,36 @@ import type { Store } from "./db.js";
 type Log = ReturnType<typeof import("./logger.js").logger>;
 const text=z.string().trim().max(200);
 const priorText=z.string().trim().max(1500);
-// The display sends `previous` with an explicit null for every field it has no value for, so drop
-// null/undefined before validation instead of failing the whole upload on a strict object.
-const stripNulls=(value:unknown):unknown=>value&&typeof value==="object"&&!Array.isArray(value)
-  ?Object.fromEntries(Object.entries(value as Record<string,unknown>).filter(([,v])=>v!==null&&v!==undefined))
-  :value;
+// The display's notes file is written by the web UI, which stores `rating: 0` for "unrated" and keeps
+// doses as JSON strings ("18.0"). Those values are forwarded verbatim in `previous`, so coerce them
+// into the documented shape instead of rejecting the whole upload — a 400 here would wedge the
+// device's upload queue permanently, because it retries the same shot forever.
+const asRating=(value:unknown):number|undefined=>{const n=Number(value);return Number.isInteger(n)&&n>=1&&n<=5?n:undefined;};
+const asDose=(value:unknown,max:number):number|undefined=>{if(value===null||value===undefined||value==="")return undefined;const n=Number(value);return Number.isFinite(n)&&n>=0&&n<=max?n:undefined;};
+const asText=(value:unknown,max:number):string|undefined=>{
+  if(typeof value==="number"&&Number.isFinite(value))return String(value).slice(0,max);
+  if(typeof value!=="string")return undefined;
+  const trimmed=value.trim();
+  return trimmed?trimmed.slice(0,max):undefined;
+};
+export const cleanPrevious=(value:unknown):Record<string,unknown>=>{
+  if(!value||typeof value!=="object"||Array.isArray(value))return {};
+  const src=value as Record<string,unknown>;
+  const out:Record<string,unknown>={};
+  const rating=asRating(src.rating); if(rating!==undefined)out.rating=rating;
+  const doseIn=asDose(src.doseIn,200); if(doseIn!==undefined)out.doseIn=doseIn;
+  const doseOut=asDose(src.doseOut,500); if(doseOut!==undefined)out.doseOut=doseOut;
+  const grind=asText(src.grindSetting,100); if(grind!==undefined)out.grindSetting=grind;
+  const bean=asText(src.beanType,200); if(bean!==undefined)out.beanType=bean;
+  const notes=asText(src.notes,1500); if(notes!==undefined)out.notes=notes;
+  return out;
+};
+
 const priorNotes=z.object({rating:z.number().int().min(1).max(5).optional(),grindSetting:priorText.optional(),doseIn:z.number().finite().min(0).max(200).optional(),doseOut:z.number().finite().min(0).max(500).optional(),beanType:priorText.optional(),notes:priorText.optional()}).strict();
 const shotSchema=z.object({
   deviceId:z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/),
   shot:z.object({id:z.number().int().nonnegative().max(0xffffffff),profile:text,duration:z.number().finite().min(0).max(3600),weight:z.number().finite().min(-100).max(1000),temperature:z.number().finite().min(0).max(200),pressure:z.number().finite().min(0).max(30),flow:z.number().finite().min(0).max(100)}).strict(),
-  previous:z.preprocess(stripNulls,priorNotes).optional().default({})
+  previous:z.preprocess(cleanPrevious,priorNotes).optional().default({})
 }).strict();
 
 export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
@@ -49,7 +69,10 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
   });
   app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{
     if(err instanceof z.ZodError)return res.status(400).json({error:"invalid_request",issues:err.issues.map(i=>({path:i.path.join("."),message:i.message}))});
-    if(err instanceof SyntaxError)return res.status(400).json({error:"invalid_json"});
+    // http-errors from body-parser (express.json limit / malformed JSON).
+    const status=(err as {status?:number;statusCode?:number;type?:string}|null)?.status??(err as {statusCode?:number}|null)?.statusCode;
+    if(status===413||(err as {type?:string}|null)?.type==="entity.too.large")return res.status(413).json({error:"payload_too_large"});
+    if(err instanceof SyntaxError||status===400)return res.status(400).json({error:"invalid_json"});
     log.error("Unhandled API error",{error:err instanceof Error?err.message.slice(0,300):"unknown"}); return res.status(500).json({error:"internal_error"});
   });
   return app;

@@ -17,7 +17,7 @@ constexpr uint32_t DISCORD_MAX_BODY_BYTES = 16384;
 constexpr uint32_t GAGGIBOT_MAX_BODY_BYTES = 16384;
 constexpr uint32_t GAGGIBOT_HTTP_TIMEOUT_MS = 8000;
 constexpr size_t GAGGIBOT_MAX_URL_BYTES = 512;
-constexpr size_t GAGGIBOT_MAX_DEVICE_ID_BYTES = 96;
+constexpr size_t GAGGIBOT_MAX_DEVICE_ID_BYTES = 64; // bridge validates 1-64 chars, ^[A-Za-z0-9._-]+$
 constexpr float DISCORD_MAX_RETRY_AFTER_S = 30.0f;
 constexpr const char *DISCORD_USER_AGENT = "GaggiMate (https://github.com/lloyd-g-w/gaggimate, 1.0)";
 constexpr const char *DISCORD_API_BASE = "https://discord.com/api/v10";
@@ -258,9 +258,24 @@ String DiscordPlugin::bridgeDeviceId() const {
     if (id.isEmpty()) {
         id = "gaggimate-" + WiFi.macAddress();
         id.replace(":", "");
-        id.toLowerCase();
     }
-    return truncateUtf8(id, GAGGIBOT_MAX_DEVICE_ID_BYTES);
+    // The bridge validates the device id as ^[A-Za-z0-9._-]{1,64}$; sanitize locally so one stray
+    // character cannot make every request fail with a 400 that we would retry forever.
+    String clean;
+    clean.reserve(GAGGIBOT_MAX_DEVICE_ID_BYTES);
+    for (size_t i = 0; i < id.length() && clean.length() < GAGGIBOT_MAX_DEVICE_ID_BYTES; i++) {
+        char c = id[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+            c == '-') {
+            clean += c;
+        } else if (c == ' ') {
+            clean += '-';
+        }
+    }
+    if (clean.isEmpty()) {
+        clean = "gaggimate";
+    }
+    return clean;
 }
 
 void DiscordPlugin::bridgeTaskLoop() {
@@ -326,7 +341,18 @@ bool DiscordPlugin::uploadBridgeShot(uint32_t shotId) {
         JsonVariantConst value = previousDoc[key];
         // Omit unknown fields entirely: the bridge validates `previous` against a strict schema and
         // an explicit null would be rejected as an invalid number/string.
-        if (!value.isNull()) {
+        if (value.isNull()) {
+            continue;
+        }
+        // Bound text fields to what the bridge accepts, so a long note cannot wedge the queue.
+        if (value.is<const char *>()) {
+            size_t maxBytes = strcmp(key, "notes") == 0 ? 1500 : (strcmp(key, "beanType") == 0 ? 200 : 100);
+            String text = truncateUtf8(value.as<String>(), maxBytes);
+            if (text.isEmpty()) {
+                continue;
+            }
+            previous[key] = text;
+        } else {
             previous[key] = value;
         }
     }
@@ -429,6 +455,7 @@ DiscordPlugin::HttpResult DiscordPlugin::bridgeRequest(const char *method, const
         return result;
     }
     String token = controller->getSettings().getGaggibotToken();
+    token.trim(); // a pasted token with surrounding whitespace would otherwise 401 forever
     if (!token.isEmpty()) {
         http.addHeader("Authorization", "Bearer " + token);
     }

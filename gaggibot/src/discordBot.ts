@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, Partials, type Message, type MessageReaction, type PartialMessageReaction, type User, type PartialUser } from "discord.js";
 import type { Config } from "./config.js";
-import { applyFields, fieldsIn, patchForReuse, RATING_EMOJIS, REUSE_EMOJI, savedPart, SKIP_EMOJI, stepMessage } from "./flow.js";
+import { applyFields, fieldsIn, normalizePatch, patchForReuse, RATING_EMOJIS, REUSE_EMOJI, savedPart, SKIP_EMOJI, stepMessage } from "./flow.js";
 import { parseReply, parseWithAi } from "./parser.js";
 import { STEPS, type NotesPatch, type ShotPayload, type Workflow } from "./types.js";
 import type { Store } from "./db.js";
@@ -10,6 +10,7 @@ export class DiscordBot {
   private client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.DirectMessages,GatewayIntentBits.DirectMessageReactions,GatewayIntentBits.MessageContent], partials:[Partials.Channel,Partials.Message,Partials.Reaction] });
   private locks = new Set<number>();
   private reconciling = false;
+  private pendingReconcile = false;
   ready = false;
   constructor(private cfg:Config, private store:Store, private log:Log) {
     this.client.once("ready", async () => {
@@ -24,19 +25,40 @@ export class DiscordBot {
   async stop():Promise<void> { this.ready=false; this.client.destroy(); }
 
   createForShot(payload:ShotPayload):void {
-    for (const user of this.cfg.userIds) this.store.prepareWorkflow(payload.deviceId,payload.shot.id,user,payload.previous);
+    // Normalise the display's notes into wire form once, so reuse and prompts use the same values.
+    const previous=normalizePatch(payload.previous);
+    for (const user of this.cfg.userIds) this.store.prepareWorkflow(payload.deviceId,payload.shot.id,user,previous);
     if (this.ready) void this.reconcile();
   }
   private async reconcile():Promise<void> {
-    // reconcile() runs on ready and after every ingest; a single in-flight pass keeps two
-    // overlapping passes from starting the same queued workflow twice.
+    // Serialise passes, but never drop one: a shot ingested while a pass is awaiting Discord I/O must
+    // still be started, otherwise its flow stays queued until some later shot supersedes it.
+    this.pendingReconcile = true;
     if (this.reconciling) return;
     this.reconciling = true;
     try {
-      for (const w of this.store.listWorkflows(["queued"])) await this.startWorkflow(w);
-      // Workflows retain their current Discord message across service restarts. No prompt is duplicated.
-      for (const w of this.store.listWorkflows(["active"])) await this.consumeExistingReaction(w);
+      while (this.pendingReconcile) {
+        this.pendingReconcile = false;
+        for (const w of this.store.listWorkflows(["queued"])) await this.startWorkflow(w);
+        // Workflows retain their current Discord message across service restarts. No prompt is duplicated.
+        for (const w of this.store.listWorkflows(["active"])) await this.resumeWorkflow(w);
+      }
     } finally { this.reconciling = false; }
+  }
+  /**
+   * Recover an active workflow that is not currently waiting on a live prompt: either its next prompt
+   * never went out (step advanced, message id cleared, crash or send failure) or every step is done
+   * and only the recap is missing.
+   */
+  private async resumeWorkflow(w:Workflow):Promise<void> {
+    const needsWork = w.step >= STEPS.length || !w.currentMessageId;
+    if (!needsWork) { await this.consumeExistingReaction(w); return; }
+    if (!this.lock(w)) return;
+    try {
+      if (w.step >= STEPS.length) await this.finish(w);
+      else await this.sendStep(w);
+    } catch(e) { this.log.warn("Could not resume workflow",{workflow:w.id,error:safeError(e)}); }
+    finally { this.unlock(w); }
   }
   private async startWorkflow(w:Workflow):Promise<void> {
     if (!this.lock(w)) return;
@@ -104,14 +126,15 @@ export class DiscordBot {
     finally { this.unlock(w); }
   }
   private async applyPatch(w:Workflow,patch:NotesPatch):Promise<void> {
-    const fields=fieldsIn(patch);
-    if (!fields.length && patch.doseOut === undefined) return;
-    for (const field of [...fields,...(patch.doseOut !== undefined ? ["doseOut" as const] : [])]) {
-      const value=patch[field]; if (value === undefined) continue;
+    const clean=normalizePatch(patch);
+    const fields=fieldsIn(clean);
+    if (!fields.length && clean.doseOut === undefined) return;
+    for (const field of [...fields,...(clean.doseOut !== undefined ? ["doseOut" as const] : [])]) {
+      const value=clean[field]; if (value === undefined) continue;
       this.store.queuePatch(w.deviceId,w.shotId,{[field]:value});
       w.savedParts.push(savedPart(field,value));
     }
-    const result=applyFields(w,patch); this.store.saveWorkflow(w);
+    const result=applyFields(w,clean); this.store.saveWorkflow(w);
     if (result.answeredCurrent) { w.step=result.next; w.currentMessageId=null; this.store.saveWorkflow(w); await this.sendStep(w); }
   }
   private async skip(w:Workflow):Promise<void> {

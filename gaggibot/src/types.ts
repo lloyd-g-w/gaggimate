@@ -3,8 +3,10 @@ export type Step = (typeof STEPS)[number];
 export type NotesPatch = Partial<{
   rating: number;
   grindSetting: string;
-  doseIn: number;
-  doseOut: number;
+  // Doses travel as strings: the display's notes files use strings, and its patch merge only
+  // recomputes ratio/index volume for string doses.
+  doseIn: number | string;
+  doseOut: number | string;
   beanType: string;
   notes: string;
 }>;

@@ -45,12 +45,26 @@ describe("bridge API",()=>{
       void store;
     } finally { server.close(); }
   });
-  it("still rejects genuinely invalid previous values",async()=>{
-    const {app}=make();
+  it("tolerates the notes format the shot-notes UI actually writes",async()=>{
+    const {app,store}=make();
     const {server,url}=listen(app);
     try {
-      const res=await post(`${url}/api/v1/shots`,{...shotBody(8),previous:{rating:9}});
-      expect(res.status).toBe(400);
+      // The web UI stores rating 0 for "unrated" and keeps doses as strings. Rejecting these would
+      // wedge the display's upload queue permanently, since it retries the same shot forever.
+      const res=await post(`${url}/api/v1/shots`,{...shotBody(21),previous:{rating:0,doseIn:"18.0",doseOut:"36.0",grindSetting:"",beanType:"  ",notes:null}});
+      expect(res.status).toBe(202);
+      const stored=store.getShot("machine",21);
+      expect(stored?.previous).toEqual({doseIn:18,doseOut:36});
+    } finally { server.close(); }
+  });
+  it("clamps unusable previous values instead of failing the upload",async()=>{
+    const {app,store}=make();
+    const {server,url}=listen(app);
+    try {
+      const res=await post(`${url}/api/v1/shots`,{...shotBody(22),previous:{rating:9,doseIn:"nonsense",doseOut:-4,beanType:"Guji",notes:"x".repeat(3000)}});
+      expect(res.status).toBe(202);
+      const stored=store.getShot("machine",22);
+      expect(stored?.previous).toEqual({beanType:"Guji",notes:"x".repeat(1500)});
     } finally { server.close(); }
   });
   it("requires a bearer token",async()=>{
@@ -78,6 +92,29 @@ describe("bridge API",()=>{
       // A rebooted display asks with after=0 and must be told what was already applied.
       const rebooted=await (await fetch(`${url}/api/v1/feedback/machine?after=0`,{headers:{authorization:`Bearer ${TOKEN}`}})).json();
       expect(rebooted.through).toBe(b);
+    } finally { server.close(); }
+  });
+  it("bounds the feedback page by bytes so the queue cannot deadlock",async()=>{
+    const {app,store}=make();
+    const {server,url}=listen(app);
+    try {
+      await post(`${url}/api/v1/shots`,shotBody(31));
+      // Long notes answers are legitimate; a page of them must still fit the display's 16 KiB cap.
+      for (let i=0;i<40;i++) store.queuePatch("machine",31,{notes:`${i}:`+"y".repeat(1400)});
+      const page=await (await fetch(`${url}/api/v1/feedback/machine?after=0`,{headers:{authorization:`Bearer ${TOKEN}`}})).json();
+      expect(JSON.stringify(page).length).toBeLessThanOrEqual(16_384);
+      expect(page.events.length).toBeGreaterThan(0);
+      expect(page.events.length).toBeLessThan(40);
+      // The returned page is contiguous from the cursor, so acknowledging it always makes progress.
+      expect(page.events[0].id).toBe(1);
+    } finally { server.close(); }
+  });
+  it("answers an oversized body with 413",async()=>{
+    const {app}=make();
+    const {server,url}=listen(app);
+    try {
+      const res=await fetch(`${url}/api/v1/shots`,{method:"POST",headers:{authorization:`Bearer ${TOKEN}`,"content-type":"application/json"},body:JSON.stringify({padding:"z".repeat(40_000)})});
+      expect(res.status).toBe(413);
     } finally { server.close(); }
   });
   it("exposes health without authentication",async()=>{

@@ -4,8 +4,41 @@ export const RATING_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️�
 export const REUSE_EMOJI = "↩️";
 export const SKIP_EMOJI = "➡️";
 
+const KEYS = ["rating", "grindSetting", "doseIn", "doseOut", "beanType", "notes"] as const;
+
 export function fieldsIn(patch: NotesPatch): Step[] {
   return STEPS.filter(s => patch[s] !== undefined);
+}
+
+/**
+ * Normalise one field for the wire. Doses are sent as strings because the display's notes files store
+ * them that way and `ShotHistory::applyNotesPatch` only recomputes the ratio and overrides the shot
+ * index volume when doseIn/doseOut are strings; a JSON number silently skips both side effects.
+ */
+export function asNotesValue(field: keyof NotesPatch, value: unknown): string | number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (field === "rating") {
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 1 && n <= 5 ? n : undefined;
+  }
+  if (field === "doseIn" || field === "doseOut") {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 && n <= (field === "doseIn" ? 200 : 500) ? String(Number(n.toFixed(2))) : undefined;
+  }
+  if (typeof value === "object") return undefined;
+  const text = String(value).trim();
+  if (!text) return undefined;
+  return text.slice(0, field === "notes" ? 1500 : field === "beanType" ? 200 : 100);
+}
+
+/** Coerce a whole patch (used for `previous` values and parsed replies) into wire form. */
+export function normalizePatch(patch: NotesPatch): NotesPatch {
+  const out: NotesPatch = {};
+  for (const field of KEYS) {
+    const value = asNotesValue(field, patch[field]);
+    if (value !== undefined) out[field] = value as never;
+  }
+  return out;
 }
 export function applyFields(w: Workflow, patch: NotesPatch): {answeredCurrent:boolean; next:number} {
   for (const field of fieldsIn(patch)) w.answeredMask |= 1 << STEPS.indexOf(field);

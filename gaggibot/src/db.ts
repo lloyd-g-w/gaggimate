@@ -72,10 +72,22 @@ export class Store {
       .run(deviceId, shotId, JSON.stringify(patch));
     return Number(info.lastInsertRowid);
   }
-  getEvents(deviceId: string, after: number, limit = 100) {
-    return (this.db.prepare("SELECT id,shot_id,patch FROM feedback_events WHERE device_id=? AND id>? ORDER BY id LIMIT ?")
-      .all(deviceId, after, limit) as {id:number;shot_id:number;patch:string}[])
-      .map(r => ({ id: r.id, shotId: r.shot_id, patch: JSON.parse(r.patch) as NotesPatch }));
+  getEvents(deviceId: string, after: number, limit = 100, maxBytes = 10_000) {
+    const rows = this.db.prepare("SELECT id,shot_id,patch FROM feedback_events WHERE device_id=? AND id>? ORDER BY id LIMIT ?")
+      .all(deviceId, after, limit) as {id:number;shot_id:number;patch:string}[];
+    // Bound the response by bytes as well as rows: the display rejects bodies over its 16 KiB cap,
+    // and it only acknowledges after applying, so an oversized page of long notes would deadlock
+    // the queue forever. Always returning at least one event guarantees forward progress.
+    const events: {id:number;shotId:number;patch:NotesPatch}[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      const event = { id: row.id, shotId: row.shot_id, patch: JSON.parse(row.patch) as NotesPatch };
+      const size = JSON.stringify(event).length;
+      if (events.length > 0 && bytes + size > maxBytes) break;
+      bytes += size;
+      events.push(event);
+    }
+    return events;
   }
   acknowledge(deviceId: string, through: number): void {
     this.db.prepare(`INSERT INTO acknowledgements(device_id,through_id) VALUES(?,?)
