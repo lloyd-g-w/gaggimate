@@ -8,12 +8,12 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${GAGGIBOT_PORT:-3000}:3000"
+      - "${GAGGIBOT_PORT:-3000}:${GAGGIBOT_PORT:-3000}"
     environment:
       DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN in the Portainer stack environment}"
       DISCORD_USER_IDS: "${DISCORD_USER_IDS:?Set DISCORD_USER_IDS in the Portainer stack environment}"
       GAGGIBOT_SHARED_TOKEN: "${GAGGIBOT_SHARED_TOKEN:?Set GAGGIBOT_SHARED_TOKEN in the Portainer stack environment}"
-      PORT: "3000"
+      PORT: "${GAGGIBOT_PORT:-3000}"
       DATA_DIR: "/data"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       AI_URL: "${AI_URL:-}"
@@ -29,7 +29,8 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      # Reads the container's own PORT, so changing GAGGIBOT_PORT keeps the check working.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       start_period: 20s

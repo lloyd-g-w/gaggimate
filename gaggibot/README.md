@@ -29,7 +29,7 @@ Portainer must support building a compose service from the checked-out repositor
 | `DISCORD_BOT_TOKEN` | yes | Discord bot token |
 | `DISCORD_USER_IDS` | yes | Comma-separated Discord user IDs |
 | `GAGGIBOT_SHARED_TOKEN` | yes | Random string of at least 32 characters; configure the same value in GaggiMate |
-| `GAGGIBOT_PORT` | no | Published host port, default `3000` |
+| `GAGGIBOT_PORT` | no | Published host port *and* container port, default `3000` |
 | `LOG_LEVEL` | no | `debug`, `info`, `warn`, or `error` |
 | `AI_URL` | no | OpenAI-compatible `/chat/completions` URL |
 | `AI_API_KEY` | no | Key for `AI_URL` |
