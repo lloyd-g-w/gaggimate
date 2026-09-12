@@ -1,0 +1,65 @@
+name: Gaggibot
+
+on:
+  push:
+    branches: [master, main, nightly]
+    paths:
+      - 'gaggibot/**'
+      - '.github/workflows/gaggibot.yml'
+  pull_request:
+    paths:
+      - 'gaggibot/**'
+      - '.github/workflows/gaggibot.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gaggibot
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: gaggibot/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  # The compose stack is the supported deployment path, and a missing COPY or a config rename breaks
+  # it without breaking any of the checks above, so build the real image too.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build -t gaggibot:ci gaggibot
+      - name: Validate compose file
+        run: |
+          cd gaggibot
+          DISCORD_BOT_TOKEN=dummy DISCORD_USER_IDS=123456789012345678 \
+            GAGGIBOT_SHARED_TOKEN=0123456789abcdef0123456789abcdef \
+            docker compose config > /dev/null
+      - name: Boot the built image and probe it
+        run: |
+          docker run -d --name gaggibot-ci -p 3000:3000 \
+            -e GAGGIBOT_DRY_RUN=1 \
+            -e GAGGIBOT_SHARED_TOKEN=0123456789abcdef0123456789abcdef \
+            gaggibot:ci
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/health > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/health
+          curl -fsS -X POST -H "authorization: Bearer 0123456789abcdef0123456789abcdef" \
+            http://127.0.0.1:3000/api/v1/test
+          docker logs gaggibot-ci
+          docker rm -f gaggibot-ci
