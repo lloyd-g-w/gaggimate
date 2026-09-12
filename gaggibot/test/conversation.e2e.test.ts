@@ -185,7 +185,31 @@ describe("gaggibot conversation (dry run)",()=>{
     try {
       await h.bot.start();
       const body=await (await h.call("/api/v1/ping")).json() as {ok:boolean;discord:boolean;users:number};
-      expect(body).toEqual({ok:true,dryRun:true,discord:true,users:1});
+      expect(body).toEqual({ok:true,dryRun:true,discord:true,reason:"",users:1});
     } finally { h.server.close(); await h.bot.stop(); }
+  });
+
+  it("stays up and explains itself when Discord is unavailable",async()=>{
+    // Reproduces the field failure: the bot never becomes ready. The API must keep serving a
+    // diagnosable response instead of the container exiting and restarting in a loop.
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),"gaggibot-nodiscord-")); dirs.push(dir);
+    const store=new Store(dir);
+    const cfg={GAGGIBOT_SHARED_TOKEN:TOKEN,dryRun:false,userIds:[USER]} as unknown as Config;
+    const bot=new DiscordBot(cfg,store,logger("error"));
+    const app=createApp(cfg,store,bot,logger("error"));
+    const server=app.listen(0);
+    const port=(server.address() as {port:number}).port;
+    const base=`http://127.0.0.1:${port}`;
+    const auth={authorization:`Bearer ${TOKEN}`,"content-type":"application/json"};
+    try {
+      // Not started at all: equivalent to a login that never succeeds.
+      const health=await fetch(`${base}/health`);
+      expect(health.status).toBe(503);
+      expect(await health.json()).toMatchObject({ok:false,discord:false,database:true,dryRun:false});
+
+      const test=await fetch(`${base}/api/v1/test`,{method:"POST",headers:auth,body:"{}"});
+      expect(test.status).toBe(503);
+      expect(await test.json()).toMatchObject({ok:false,error:"discord_not_ready"});
+    } finally { server.close(); await bot.stop(); }
   });
 });

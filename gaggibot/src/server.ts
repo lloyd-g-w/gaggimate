@@ -46,7 +46,15 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
   const app=express();
   app.disable("x-powered-by"); app.set("trust proxy",1); app.use(helmet());
   app.use(express.json({limit:"32kb",strict:true}));
-  app.get("/health",(_req,res)=>res.status(bot.ready&&store.healthCheck()?200:503).json({ok:bot.ready&&store.healthCheck(),discord:bot.ready,database:true}));
+  app.get("/health",(_req,res)=>{
+    const status=bot.status();
+    const database=store.healthCheck();
+    const body:Record<string,unknown>={ok:status.ready&&database,discord:status.ready,database,dryRun:cfg.dryRun};
+    // Report *why* Discord is unavailable, so a bad token or a disabled privileged intent is
+    // visible without digging through container logs.
+    if(!status.ready&&status.error) body.reason=status.error;
+    res.status(status.ready&&database?200:503).json(body);
+  });
   const limiter=rateLimit({windowMs:60_000,limit:120,standardHeaders:"draft-7",legacyHeaders:false});
   app.use("/api",limiter,authenticate(cfg.GAGGIBOT_SHARED_TOKEN));
   app.post("/api/v1/shots",(req,res,next)=>{
@@ -72,7 +80,8 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
   // display's "Test" button, so a misconfigured token or missing DM permission is diagnosable
   // without pulling a shot.
   app.post("/api/v1/test",async(_req,res)=>{
-    if(!bot.ready) return res.status(503).json({ok:false,error:"discord_not_ready",dryRun:cfg.dryRun});
+    const status=bot.status();
+    if(!status.ready) return res.status(503).json({ok:false,error:"discord_not_ready",dryRun:cfg.dryRun,reason:status.error});
     try {
       const results=await bot.sendTestMessage();
       const ok=results.length>0&&results.every(r=>r.delivered);
@@ -85,7 +94,7 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
   });
   // Cheap readiness probe (no Discord call): lets the display distinguish "unreachable/wrong token"
   // from "reachable but Discord is down".
-  app.get("/api/v1/ping",(_req,res)=>res.json({ok:true,dryRun:cfg.dryRun,discord:bot.ready,users:cfg.userIds.length}));
+  app.get("/api/v1/ping",(_req,res)=>res.json({ok:true,dryRun:cfg.dryRun,discord:bot.status().ready,reason:bot.status().error,users:cfg.userIds.length}));
 
   // Dry-run harness: only exists when GAGGIBOT_DRY_RUN=1, and still requires the bearer token. It
   // drives the exact same handlers as Discord events so the state machine can be tested end to end

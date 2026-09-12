@@ -12,7 +12,7 @@ function make() {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"gaggibot-api-")); dirs.push(dir);
   const store=new Store(dir);
   const ingested:number[]=[];
-  const bot={ready:true,createForShot:(p:{shot:{id:number}})=>{ingested.push(p.shot.id);}} as unknown as DiscordBot;
+  const bot={ready:true,status:()=>({ready:true,error:""}),createForShot:(p:{shot:{id:number}})=>{ingested.push(p.shot.id);}} as unknown as DiscordBot;
   const cfg={GAGGIBOT_SHARED_TOKEN:TOKEN} as unknown as Config;
   return {app:createApp(cfg,store,bot,logger("error")),store,ingested};
 }

@@ -97,6 +97,16 @@ the feedback events the display would poll for and acknowledge. `npm test` cover
 Pull a shot. Within a couple of seconds you should get the summary and the rating prompt; the
 answer reaches shot history within about 2 s of each reply.
 
+### Troubleshooting
+
+| Log line / symptom | Cause and fix |
+|---|---|
+| `Discord login failed ... Discord rejected the requested intents` (`Used disallowed intents`) | **Message Content** is a privileged intent and is off by default. Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents** → enable **Message Content Intent** → Save → restart the container. |
+| `Discord login failed ... Discord rejected the bot token` | Reset the token in the portal (Bot → Reset Token) and update `DISCORD_BOT_TOKEN`. |
+| `Discord login failed ... Could not reach Discord` | The container has no DNS/internet access. |
+| `/health` returns 503 with a `reason` | Expected while Discord is unreachable. The service stays up and retries with backoff (2 s doubling to 5 min); it never exit-loops. |
+| Test says *reached Discord but the DM failed* | The bot must share a server with you (Guild Install, `bot` scope) and have **Send Messages**. |
+
 ## GaggiMate bridge API
 
 All `/api/v1` endpoints require `Authorization: Bearer <GAGGIBOT_SHARED_TOKEN>`. JSON request bodies are capped at 32 KiB and API clients are rate-limited.

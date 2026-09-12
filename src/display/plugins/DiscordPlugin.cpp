@@ -549,7 +549,7 @@ static String describeBridgeFailure(int status) {
     case 502:
         return "Bridge reached Discord but the DM failed \xE2\x80\x94 check the bot shares a server with you and has Send Messages";
     case 503:
-        return "Bridge is running but not connected to Discord yet \xE2\x80\x94 check its logs (bad token?)";
+        return "Bridge is running but not connected to Discord \xE2\x80\x94 check its logs (bad token or missing privileged intent?)";
     case -2:
         return "Gaggibot URL must start with http:// or https://";
     case -3:
@@ -577,6 +577,15 @@ bool DiscordPlugin::performBridgeTest(String &message) {
     if (result.status < 200 || result.status >= 300) {
         ESP_LOGW("DiscordPlugin", "Gaggibot test failed -> %d", result.status);
         message = describeBridgeFailure(result.status);
+        // The bridge explains exactly what is wrong (bad token, disabled privileged intent, no
+        // internet); prefer its reason over our generic text.
+        JsonDocument errorDoc(&psramAllocator);
+        if (!result.body.isEmpty() && deserializeJson(errorDoc, result.body) == DeserializationError::Ok) {
+            String reason = errorDoc["reason"] | "";
+            if (!reason.isEmpty()) {
+                message = reason;
+            }
+        }
         return false;
     }
 

@@ -13,22 +13,37 @@ export const TEST_MESSAGE = "\u{1F9EA} **Gaggibot test** \u2014 GaggiMate reache
 export type OutboxEntry = { seq: number; userId: string; channelId: string; messageId: string; content: string; reactions: string[]; at: string };
 
 export class DiscordBot {
-  private client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.DirectMessages,GatewayIntentBits.DirectMessageReactions,GatewayIntentBits.MessageContent], partials:[Partials.Channel,Partials.Message,Partials.Reaction] });
+  // The client is (re)created per login attempt: discord.js leaves a client in an unusable state
+  // after a failed login, and a bad token or a disabled privileged intent must not crash-loop the
+  // container — it has to keep serving HTTP and report why Discord is unavailable.
+  private client: Client | null = null;
   private locks = new Set<number>();
   private reconciling = false;
   private pendingReconcile = false;
   private outbox: OutboxEntry[] = [];
   private outboxSeq = 0;
+  private stopping = false;
+  private loginError = "";
+  private retryMs = 2000;
   ready = false;
-  constructor(private cfg:Config, private store:Store, private log:Log) {
-    this.client.once("ready", async () => {
-      this.ready=true; this.log.info("Discord Gateway ready", {bot:this.client.user?.id});
+
+  constructor(private cfg:Config, private store:Store, private log:Log) {}
+
+  private createClient(): Client {
+    const client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.DirectMessages,GatewayIntentBits.DirectMessageReactions,GatewayIntentBits.MessageContent], partials:[Partials.Channel,Partials.Message,Partials.Reaction] });
+    client.once("ready", async () => {
+      this.ready = true;
+      this.loginError = "";
+      this.retryMs = 2000;
+      this.log.info("Discord Gateway ready", {bot:client.user?.id});
       await this.reconcile();
     });
-    this.client.on("messageCreate", m => void this.onMessage(m));
-    this.client.on("messageReactionAdd", (r,u) => void this.onReaction(r,u));
-    this.client.on("error", e => this.log.error("Discord client error", {error:e.message}));
+    client.on("messageCreate", m => void this.onMessage(m));
+    client.on("messageReactionAdd", (r,u) => void this.onReaction(r,u));
+    client.on("error", e => this.log.error("Discord client error", {error:e.message}));
+    return client;
   }
+
   async start():Promise<void> {
     if (this.cfg.dryRun) {
       // No Gateway connection: the HTTP API plus the dev endpoints are the whole surface under test.
@@ -37,9 +52,43 @@ export class DiscordBot {
       await this.reconcile();
       return;
     }
-    await this.client.login(this.cfg.DISCORD_BOT_TOKEN);
+    this.stopping=false;
+    void this.loginLoop();
   }
-  async stop():Promise<void> { this.ready=false; if (this.cfg.dryRun) return; this.client.destroy(); }
+
+  private async loginLoop():Promise<void> {
+    while (!this.stopping) {
+      const client=this.createClient();
+      this.client=client;
+      try {
+        await client.login(this.cfg.DISCORD_BOT_TOKEN);
+        return; // the "ready" handler flips this.ready
+      } catch(e) {
+        this.ready=false;
+        this.loginError=describeDiscordError(e);
+        this.client=null;
+        try { client.destroy(); } catch { /* already dead */ }
+        const waitMs=this.retryMs;
+        this.log.error("Discord login failed; keeping the API up and retrying",{error:this.loginError,retryInSeconds:Math.round(waitMs/1000)});
+        await this.interruptibleSleep(waitMs);
+        this.retryMs=Math.min(this.retryMs*2,300_000);
+      }
+    }
+  }
+
+  private async interruptibleSleep(ms:number):Promise<void> {
+    const until=Date.now()+ms;
+    while (!this.stopping && Date.now()<until) await new Promise(r=>setTimeout(r,Math.min(250,until-Date.now())));
+  }
+
+  status():{ready:boolean;error:string} { return {ready:this.ready,error:this.loginError}; }
+
+  async stop():Promise<void> { this.stopping=true; this.ready=false; if (this.cfg.dryRun) return; try { this.client?.destroy(); } catch { /* already dead */ } this.client=null; }
+
+  private requireClient():Client {
+    if (!this.client) throw new Error("Discord is not connected");
+    return this.client;
+  }
 
   outboxSnapshot():OutboxEntry[] { return [...this.outbox]; }
   clearOutbox():void { this.outbox=[]; }
@@ -138,7 +187,7 @@ export class DiscordBot {
       this.log.info("DRY RUN message",{to:userId,messageId,reactions,content});
       return {channelId:channel,messageId};
     }
-    const channel=channelId ? await this.client.channels.fetch(channelId) : await (await this.client.users.fetch(userId)).createDM();
+    const channel=channelId ? await this.requireClient().channels.fetch(channelId) : await (await this.requireClient().users.fetch(userId)).createDM();
     if (!channel?.isSendable()) throw new Error("DM channel unavailable");
     const message=await channel.send({content});
     for (const emoji of reactions) await message.react(emoji);
@@ -206,7 +255,7 @@ export class DiscordBot {
   private async consumeExistingReaction(w:Workflow):Promise<void> {
     if (this.cfg.dryRun || !w.channelId || !w.currentMessageId) return;
     try {
-      const channel=await this.client.channels.fetch(w.channelId); if (!channel?.isTextBased()) return;
+      const channel=await this.requireClient().channels.fetch(w.channelId); if (!channel?.isTextBased()) return;
       const message=await channel.messages.fetch(w.currentMessageId);
       for (const reaction of message.reactions.cache.values()) {
         const users=await reaction.users.fetch(); const user=users.get(w.userId);
@@ -218,3 +267,16 @@ export class DiscordBot {
   private unlock(w:Workflow):void { this.locks.delete(w.id); }
 }
 function safeError(e:unknown):string { return e instanceof Error ? e.message.slice(0,300) : "unknown error"; }
+
+/** Turns a Discord login failure into something the user can act on. */
+export function describeDiscordError(e:unknown):string {
+  const raw=e instanceof Error?e.message:String(e);
+  const text=raw.toLowerCase();
+  if(text.includes("disallowed intent")||text.includes("disallowed intent(s)"))
+    return "Discord rejected the requested intents: enable Message Content Intent in the Discord Developer Portal (your app -> Bot -> Privileged Gateway Intents), then restart the container";
+  if(text.includes("invalid token")||text.includes("4014")||text.includes("unauthorized"))
+    return "Discord rejected the bot token: reset it in the Developer Portal (Bot -> Reset Token) and update DISCORD_BOT_TOKEN";
+  if(text.includes("enotfound")||text.includes("eai_again")||text.includes("etimedout")||text.includes("fetch failed"))
+    return "Could not reach Discord; check the container's DNS and internet access";
+  return raw.slice(0,300);
+}
