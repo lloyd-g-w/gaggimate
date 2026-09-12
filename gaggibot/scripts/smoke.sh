@@ -39,10 +39,10 @@ sleep 0.5
 say "4. Messages the bot would have sent"
 api GET /api/v1/_dev/outbox | python3 -c 'import json,sys
 for m in json.load(sys.stdin)["messages"]:
-    print("---"); print(m["content"]); print("reactions:", " ".join(m["reactions"]) or "(none)")'
+    print("---"); print(m["content"]); print("buttons:", " | ".join(b["label"] for b in m["buttons"]) or "(none)")'
 
-say "5. Answer: react 4, then reply with the remaining steps"
-api POST /api/v1/_dev/react '{"emoji":"4️⃣"}' >/dev/null; sleep 0.3
+say "5. Answer: tap the 4 button, then reply with the remaining steps"
+api POST /api/v1/_dev/press '{"customId":"gm:rate:4"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"3.2"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"18"}' >/dev/null; sleep 0.3
 api POST /api/v1/_dev/reply '{"text":"Ethiopia Guji"}' >/dev/null; sleep 0.3

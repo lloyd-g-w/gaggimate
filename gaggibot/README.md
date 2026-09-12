@@ -9,7 +9,7 @@ Gaggibot moves Discord shot feedback off the ESP32. It is a small Node 22 servic
 Use an existing Discord application or create one in the Discord Developer Portal (Gaggibot cannot do this for you):
 
 1. **Bot**: reset/copy the token. Enable the **Message Content Intent**.
-2. **Installation / Guild Install**: include the `bot` scope and **Send Messages**, **Read Message History**, and **Add Reactions** permissions; install it to a server shared with each recipient.
+2. **Installation / Guild Install**: include the `bot` scope and **Send Messages** and **Read Message History** permissions; install it to a server shared with each recipient. (*Add Reactions* is not needed: prompts use buttons.)
 3. Enable Developer Mode in Discord, copy each recipient's user ID, and allow DMs from members of that server.
 
 Never paste the bot token into GaggiMate. It belongs only in the stack environment.
@@ -59,11 +59,12 @@ Health is exposed without authentication at `GET /health`. A healthy response re
 ### 1. Is the deployment wired up? (no shot needed)
 
 Open **Settings → Plugins → Discord Shot Feedback** and press **Send test message**. With a real
-token this sends an actual Discord DM to every user in `DISCORD_USER_IDS`, with a ✅ reaction added
-to it. Nothing is recorded as a shot, so it is safe to press any time.
+token this sends an actual Discord DM to every user in `DISCORD_USER_IDS` with a **✅ Tap to confirm
+buttons work** button on it. Nothing is recorded as a shot, so it is safe to press any time.
 
-The ✅ reaction matters: it proves the bot can react, which is how every real step is answered. The
-result appears right in the card, and each failure explains itself, e.g.
+Tap that button: the message changes to *Buttons work too*, which proves interactions reach the
+bot — that is how every real step is answered. The result of the send appears right in the card, and
+each failure explains itself, e.g.
 
 | What you see | What to fix |
 |---|---|
@@ -178,13 +179,38 @@ In bridge mode the display makes only two kinds of small HTTP requests: it uploa
 
 ## Discord flow
 
-Gaggibot sends a shot summary, then **rating → grind → dose in → bean → note**. Rating receives 1️⃣–5️⃣ and ➡️ reactions. Other steps receive ↩️ when the previous shot has a value (except notes) and always ➡️. A message or reaction advances immediately:
+Gaggibot sends a shot summary, then **rating → grind → dose in → bean → note**, one prompt per
+step. Each prompt carries its controls as **buttons**, so it is interactive the instant it appears:
 
-- 1️⃣–5️⃣ or a number saves the rating.
-- ↩️ saves the shown previous value.
-- ➡️ skips without writing anything.
+| Step | Buttons |
+|---|---|
+| Rate this shot | **1 2 3 4 5**, **↩️ Reuse *n*/5** (if the last shot was rated), **➡️ Skip** |
+| Grind / Dose in / Bean | **↩️ Reuse *value*** (if the last shot has one), **➡️ Skip** |
+| Note | **➡️ Skip** (notes are never reused) |
+
+```
+-# Shot #224 · step 1/5
+# Rate this shot
+
+Your last shot was rated *3/5*.
+
+Tap 1–5 below or send a number from *1 to 5*.
+
+-# 1–5 to rate · ↩️ to reuse *3/5* · ➡️ to skip
+[ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
+[ ↩️ Reuse 3/5 ] [ ➡️ Skip ]
+```
+
+- A tap or a text reply advances immediately; the answered prompt's buttons are retired once the
+  next prompt is out, so a stale tap cannot land.
+- ↩️ saves the shown previous value; ➡️ skips without writing anything.
 - `key: value` fields separated by lines or `|` can answer several steps at once.
 - Optional AI mode parses natural language and falls back to the deterministic parser.
+- Manually added reactions (1️⃣–5️⃣, ↩️, ➡️) still work, mapped onto the same actions.
+
+Why buttons rather than reactions: Discord rate-limits adding reactions to roughly one per 250 ms
+per channel, so a rating prompt's six reactions trickled in over 1.5 s+ after every message.
+Buttons are part of the message itself — no extra requests, no rate limit.
 
 Every answer is queued before the next prompt is sent. A newer shot supersedes an unfinished workflow for the same Discord user; fields already queued from the older shot remain available to GaggiMate.
 

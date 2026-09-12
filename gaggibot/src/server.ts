@@ -3,6 +3,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
+import { actionFromCustomId } from "./flow.js";
 import type { Config } from "./config.js";
 import type { DiscordBot } from "./discordBot.js";
 import type { Store } from "./db.js";
@@ -116,6 +117,19 @@ export function createApp(cfg:Config,store:Store,bot:DiscordBot,log:Log) {
         const workflow=store.getActiveByUser(userId);
         if (!workflow?.currentMessageId) return res.status(409).json({error:"no_active_prompt"});
         void bot.handleUserReaction(userId,workflow.currentMessageId,body.emoji);
+        res.status(202).json({accepted:true,messageId:workflow.currentMessageId,step:workflow.step});
+      } catch(e){next(e);}
+    });
+    // Tap a button on the current prompt by custom id (gm:rate:4, gm:reuse, gm:skip).
+    app.post("/api/v1/_dev/press",(req,res,next)=>{
+      try {
+        const body=z.object({customId:z.string().min(1).max(64),userId:z.string().regex(/^\d{15,22}$/).optional()}).strict().parse(req.body);
+        const userId=body.userId??cfg.userIds[0]!;
+        const action=actionFromCustomId(body.customId);
+        if (!action) return res.status(400).json({error:"unknown_button"});
+        const workflow=store.getActiveByUser(userId);
+        if (!workflow?.currentMessageId) return res.status(409).json({error:"no_active_prompt"});
+        void bot.handleUserAction(userId,workflow.currentMessageId,action);
         res.status(202).json({accepted:true,messageId:workflow.currentMessageId,step:workflow.step});
       } catch(e){next(e);}
     });

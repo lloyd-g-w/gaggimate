@@ -47,8 +47,9 @@ you and the bot is perfect.
 1. Left menu → **Installation**.
 2. Under **Default Install Settings → Guild Install → Scopes** tick **`bot`** (leave
    `applications.commands` if it is there; it is harmless but unused).
-3. In the **Permissions** box that appears, tick **Send Messages** and **Add Reactions** (the plugin
-   seeds the reaction buttons itself). In **Gaggibot** mode also tick **Read Message History**.
+3. In the **Permissions** box that appears, tick **Send Messages**. Direct-from-display mode also
+   needs **Add Reactions** (the display seeds the reactions itself); **Gaggibot** mode uses buttons
+   instead and needs **Read Message History**.
 4. **Save Changes**, then copy the **Install Link** (it now contains `scope=bot…&permissions=2048`).
 5. Open that link in a browser → **Add to Server** → choose your server → **Authorise**.
 6. Check the bot now appears in the server's member list.
@@ -102,8 +103,9 @@ Changing the enable toggle, token, users or mode takes effect after **Save & Res
 ### 2.1 Test it before pulling a shot
 
 Press **Send test message** on the card (after saving). It sends a real DM to every configured
-user — with a ✅ reaction, so it also proves the bot can react, which is how every step is answered.
-Nothing is recorded as a shot, so it is safe to press any time.
+user. In Gaggibot mode the DM carries a **✅ Tap to confirm buttons work** button — tap it and the
+message changes to *Buttons work too*, proving taps reach the bot, which is how every step is
+answered. Nothing is recorded as a shot, so it is safe to press any time.
 
 The result appears under the button:
 
@@ -140,22 +142,26 @@ Let's log it — answer each step, ↩️ reuses your last shot's value, ➡️ 
 ### 3.2 The steps
 
 Every step message shows what you entered for your **previous shot** (if anything) and already
-carries the reactions you need — just click:
+carries the controls you need. In **Gaggibot** mode they are **buttons** under the prompt, present
+the instant it appears; in direct mode they are reactions the display adds one at a time (Discord
+rate-limits those, so they trickle in over a second or two).
 
 ```
-Shot #142 · step 3/5
-# Dose in
+Shot #142 · step 1/5
+# Rate this shot
 
-Your last shot was *18.0 g* in.
+Your last shot was rated *3/5*.
 
-Send the dose for this shot as a message, e.g. 18
+Tap 1–5 below or send a number from *1 to 5*.
 
--# React ↩️ to reuse *18.0 g* · ➡️ to skip
+-# 1–5 to rate · ↩️ to reuse *3/5* · ➡️ to skip
+[ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
+[ ↩️ Reuse 3/5 ] [ ➡️ Skip ]
 ```
 
-| Step | Answer by text | Reactions pre-added by the bot |
+| Step | Answer by text | Controls (Gaggibot buttons / direct-mode reactions) |
 |---|---|---|
-| **Rate this shot** | a number `1`–`5` | 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ ➡️ |
+| **Rate this shot** | a number `1`–`5` | **1–5**, **↩️ Reuse** (Gaggibot only, if the last shot was rated), **➡️ Skip** |
 | **Grind** | e.g. `3.5` | ↩️ (if a last value exists) ➡️ |
 | **Dose in** | e.g. `18` | ↩️ ➡️ |
 | **Bean** | e.g. `Ethiopia Guji` | ↩️ ➡️ |
@@ -165,6 +171,8 @@ Send the dose for this shot as a message, e.g. 18
 - **➡️ skip** saves nothing for this field and moves on.
 - Typing a value saves it and moves on. Clicking a rating later overrides an earlier click.
 - If you click both a value and ➡️, the value wins (skip is the likelier mis-click).
+- In Gaggibot mode an answered prompt loses its buttons once the next prompt is out, so a late
+  tap on an old message does nothing. Manually added reactions still work there too.
 
 After the last step the bot sends a recap, e.g. `✅ Shot #142 logged: rating 4, grind 3.5, in 18.0 g, bean Ethiopia Guji, note.`
 Each field is saved the moment you answer it, so you can stop halfway and keep what you entered.

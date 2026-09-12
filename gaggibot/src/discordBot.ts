@@ -1,6 +1,6 @@
-import { Client, GatewayIntentBits, Partials, type Message, type MessageReaction, type PartialMessageReaction, type User, type PartialUser } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, type Interaction, type Message, type MessageReaction, type PartialMessageReaction, type User, type PartialUser } from "discord.js";
 import type { Config } from "./config.js";
-import { applyFields, fieldsIn, normalizePatch, patchForReuse, RATING_EMOJIS, REUSE_EMOJI, savedPart, SKIP_EMOJI, stepMessage } from "./flow.js";
+import { actionFromCustomId, actionFromEmoji, applyFields, BUTTON_PREFIX, fieldsIn, normalizePatch, patchForReuse, savedPart, stepButtons, stepMessage, type StepAction, type StepButton } from "./flow.js";
 import { parseReply, parseWithAi } from "./parser.js";
 import { STEPS, type NotesPatch, type ShotPayload, type Workflow } from "./types.js";
 import type { Store } from "./db.js";
@@ -10,7 +10,10 @@ type Log = ReturnType<typeof import("./logger.js").logger>;
 export const TEST_MESSAGE = "\u{1F9EA} **Gaggibot test** \u2014 GaggiMate reached the bridge and the bot can DM you. Nothing was recorded; pull a shot for the real flow.";
 
 /** A message the bot "sent". In dry-run mode nothing leaves the process. */
-export type OutboxEntry = { seq: number; userId: string; channelId: string; messageId: string; content: string; reactions: string[]; at: string };
+export type OutboxEntry = { seq: number; userId: string; channelId: string; messageId: string; content: string; buttons: {customId:string;label:string}[]; buttonsRemoved?: boolean; at: string };
+
+const TEST_BUTTON_ID=`${BUTTON_PREFIX}test`;
+const TEST_DONE_MESSAGE="✅ **Buttons work too.** GaggiMate can reach the bridge, the bot can DM you, and you can answer with a tap. Nothing was recorded; pull a shot for the real flow.";
 
 export class DiscordBot {
   // The client is (re)created per login attempt: discord.js leaves a client in an unusable state
@@ -25,6 +28,7 @@ export class DiscordBot {
   private stopping = false;
   private loginError = "";
   private retryMs = 2000;
+  private reconcileTimer: NodeJS.Timeout | null = null;
   ready = false;
 
   constructor(private cfg:Config, private store:Store, private log:Log) {}
@@ -36,12 +40,25 @@ export class DiscordBot {
       this.loginError = "";
       this.retryMs = 2000;
       this.log.info("Discord Gateway ready", {bot:client.user?.id});
+      this.startReconcileTimer();
       await this.reconcile();
     });
     client.on("messageCreate", m => void this.onMessage(m));
     client.on("messageReactionAdd", (r,u) => void this.onReaction(r,u));
+    client.on("interactionCreate", i => void this.onInteraction(i));
     client.on("error", e => this.log.error("Discord client error", {error:e.message}));
     return client;
+  }
+
+  /**
+   * A prompt send can fail after the workflow already advanced (network blip, container restart in
+   * the window). Rather than waiting for the next shot to trigger reconcile(), re-check every 30 s so
+   * a stalled flow re-sends its prompt on its own.
+   */
+  private startReconcileTimer():void {
+    if (this.reconcileTimer) return;
+    this.reconcileTimer=setInterval(()=>{ if (this.ready) void this.reconcile(); },30_000);
+    this.reconcileTimer.unref();
   }
 
   async start():Promise<void> {
@@ -49,6 +66,7 @@ export class DiscordBot {
       // No Gateway connection: the HTTP API plus the dev endpoints are the whole surface under test.
       this.ready=true;
       this.log.warn("DRY RUN: Discord login skipped; messages are recorded, never sent");
+      this.startReconcileTimer();
       await this.reconcile();
       return;
     }
@@ -83,7 +101,7 @@ export class DiscordBot {
 
   status():{ready:boolean;error:string} { return {ready:this.ready,error:this.loginError}; }
 
-  async stop():Promise<void> { this.stopping=true; this.ready=false; if (this.cfg.dryRun) return; try { this.client?.destroy(); } catch { /* already dead */ } this.client=null; }
+  async stop():Promise<void> { this.stopping=true; this.ready=false; if (this.reconcileTimer) { clearInterval(this.reconcileTimer); this.reconcileTimer=null; } if (this.cfg.dryRun) return; try { this.client?.destroy(); } catch { /* already dead */ } this.client=null; }
 
   private requireClient():Client {
     if (!this.client) throw new Error("Discord is not connected");
@@ -95,13 +113,13 @@ export class DiscordBot {
 
   /**
    * Called by the display's "Test" button (and by curl): sends one clearly-labelled DM to each
-   * configured user and adds a ✅ reaction, which together prove the bot can DM the user and react —
-   * the two things every real shot flow depends on.
+   * configured user with a button on it. Delivery proves the bot can DM the user; tapping the button
+   * proves interactions reach the bot — the two things every real shot flow depends on.
    */
   async sendTestMessage():Promise<{userId:string;delivered:boolean;error?:string}[]> {
     const results:{userId:string;delivered:boolean;error?:string}[]=[];
     for (const userId of this.cfg.userIds) {
-      try { await this.deliver(userId,null,TEST_MESSAGE,["✅"]); results.push({userId,delivered:true}); }
+      try { await this.deliver(userId,null,TEST_MESSAGE,[[{customId:TEST_BUTTON_ID,label:"✅ Tap to confirm buttons work",primary:true}]]); results.push({userId,delivered:true}); }
       catch(e) { results.push({userId,delivered:false,error:safeError(e)}); }
     }
     return results;
@@ -161,37 +179,59 @@ export class DiscordBot {
     return `☕ **Shot #${s.id} — ${s.profile || "Unknown profile"}**\n`+
       `⏱ ${s.duration.toFixed(1)} s   ⚖️ ${s.weight.toFixed(1)} g   🌡️ ${s.temperature.toFixed(1)} °C   `+
       `⏫ ${s.pressure.toFixed(1)} bar   💧 ${s.flow.toFixed(1)} ml/s\n`+
-      "Let's log it — answer each step; use the reactions below each prompt.";
-  }
-  /** Reactions the bot pre-adds to a step prompt. */
-  private reactionsFor(w:Workflow):string[] {
-    const field=STEPS[w.step]; if (!field) return [];
-    if (field === "rating") return [...RATING_EMOJIS, SKIP_EMOJI];
-    const reactions:string[]=[];
-    if (field !== "notes" && w.lastValues[field] !== undefined) reactions.push(REUSE_EMOJI);
-    reactions.push(SKIP_EMOJI);
-    return reactions;
+      "Let's log it — tap the buttons under each prompt, or just reply.";
   }
   private async sendStep(w:Workflow):Promise<void> {
     if (w.step >= STEPS.length) { await this.finish(w); return; }
-    const sent=await this.deliver(w.userId,w.channelId,stepMessage(w),this.reactionsFor(w));
+    const sent=await this.deliver(w.userId,w.channelId,stepMessage(w),stepButtons(w));
     w.channelId=sent.channelId; w.currentMessageId=sent.messageId; this.store.saveWorkflow(w);
   }
-  /** Single send path: real DM in production, in-memory outbox under dry-run. */
-  private async deliver(userId:string,channelId:string|null,content:string,reactions:string[]):Promise<{channelId:string;messageId:string}> {
+  /**
+   * Single send path: real DM in production, in-memory outbox under dry-run. Buttons travel in the
+   * same request as the text, so a prompt is interactive the instant it appears (reactions had to be
+   * added one REST call at a time and Discord rate-limits those to ~4/s).
+   */
+  private async deliver(userId:string,channelId:string|null,content:string,buttons:StepButton[][]):Promise<{channelId:string;messageId:string}> {
     if (this.cfg.dryRun) {
       const channel=channelId ?? `dry-dm-${userId}`;
       const messageId=`dry-msg-${++this.outboxSeq}`;
-      this.outbox.push({seq:this.outboxSeq,userId,channelId:channel,messageId,content,reactions,at:new Date().toISOString()});
+      const flat=buttons.flat().map(b=>({customId:b.customId,label:b.label}));
+      this.outbox.push({seq:this.outboxSeq,userId,channelId:channel,messageId,content,buttons:flat,at:new Date().toISOString()});
       if (this.outbox.length>100) this.outbox.shift();
-      this.log.info("DRY RUN message",{to:userId,messageId,reactions,content});
+      this.log.info("DRY RUN message",{to:userId,messageId,buttons:flat.map(b=>b.label),content});
       return {channelId:channel,messageId};
     }
-    const channel=channelId ? await this.requireClient().channels.fetch(channelId) : await (await this.requireClient().users.fetch(userId)).createDM();
+    const client=this.requireClient();
+    // users.createDM(id) opens (or returns the cached) DM in one call; fetching the user first was a
+    // second round-trip on every new conversation.
+    const channel=channelId ? await client.channels.fetch(channelId) : await client.users.createDM(userId);
     if (!channel?.isSendable()) throw new Error("DM channel unavailable");
-    const message=await channel.send({content});
-    for (const emoji of reactions) await message.react(emoji);
+    const components=buttons.map(row=>new ActionRowBuilder<ButtonBuilder>().addComponents(
+      row.map(b=>new ButtonBuilder().setCustomId(b.customId).setLabel(b.label.slice(0,80)).setStyle(b.primary?ButtonStyle.Primary:ButtonStyle.Secondary))));
+    const message=await channel.send({content,components});
     return {channelId:channel.id,messageId:message.id};
+  }
+  /** Remove the buttons from a prompt that has been answered, so a stale tap cannot happen. */
+  private async removeButtons(channelId:string,messageId:string):Promise<void> {
+    try {
+      if (this.cfg.dryRun) { const entry=this.outbox.find(m=>m.messageId===messageId); if (entry) { entry.buttons=[]; entry.buttonsRemoved=true; } return; }
+      const channel=await this.requireClient().channels.fetch(channelId);
+      if (!channel?.isSendable()) return;
+      await channel.messages.edit(messageId,{components:[]});
+    } catch(e) { this.log.debug("Could not remove buttons from an answered prompt",{messageId,error:safeError(e)}); }
+  }
+  private async onInteraction(interaction:Interaction):Promise<void> {
+    if (!interaction.isButton()) return;
+    if (interaction.customId === TEST_BUTTON_ID) {
+      try { await interaction.update({content:TEST_DONE_MESSAGE,components:[]}); }
+      catch(e) { this.log.warn("Could not acknowledge the test button",{error:safeError(e)}); }
+      return;
+    }
+    const action=actionFromCustomId(interaction.customId);
+    // Acknowledge within Discord's 3 s window no matter what, or the user sees "This interaction failed".
+    try { await interaction.deferUpdate(); } catch { /* expired or already acknowledged */ }
+    if (!action) return;
+    await this.handleUserAction(interaction.user.id, interaction.message.id, action);
   }
   private async onMessage(message:Message):Promise<void> {
     if (message.author.bot || message.guildId || !message.content.trim()) return;
@@ -214,21 +254,22 @@ export class DiscordBot {
     try { if (reaction.partial) await reaction.fetch(); } catch { return; }
     await this.handleUserReaction(user.id, reaction.message.id, reaction.emoji.name ?? "");
   }
+  /** Manually added reactions still work (1️⃣–5️⃣, ↩️, ➡️); they map onto the same actions as the buttons. */
   async handleUserReaction(userId:string,messageId:string,emoji:string):Promise<void> {
+    const w=this.store.getActiveByUser(userId);
+    if (!w || messageId !== w.currentMessageId) return;
+    const action=actionFromEmoji(emoji,w.step); if (!action) return;
+    await this.handleUserAction(userId,messageId,action);
+  }
+  /** Shared by button taps, reactions and the dry-run endpoint. Anchored to the live prompt. */
+  async handleUserAction(userId:string,messageId:string,action:StepAction):Promise<void> {
     const w=this.store.getActiveByUser(userId);
     if (!w || messageId !== w.currentMessageId || !this.lock(w)) return;
     try {
-      if (w.step === 0) {
-        const n=RATING_EMOJIS.indexOf(emoji as typeof RATING_EMOJIS[number]);
-        if (n >= 0) { await this.applyPatch(w,{rating:n+1}); return; }
-      }
-      if (emoji === REUSE_EMOJI || emoji === "↩") {
-        // The rating step offers keycaps only: reusing an old rating would silently re-rate this shot.
-        if (w.step === 0) return;
-        const patch=patchForReuse(w); if (patch) await this.applyPatch(w,patch); return;
-      }
-      if (emoji === SKIP_EMOJI || emoji === "➡") await this.skip(w);
-    } catch(e) { this.log.warn("Failed to handle reaction",{workflow:w.id,error:safeError(e)}); }
+      if (action.type === "rate") { if (w.step === 0) await this.applyPatch(w,{rating:action.value}); return; }
+      if (action.type === "reuse") { const patch=patchForReuse(w); if (patch) await this.applyPatch(w,patch); return; }
+      await this.skip(w);
+    } catch(e) { this.log.warn("Failed to handle action",{workflow:w.id,error:safeError(e)}); }
     finally { this.unlock(w); }
   }
   private async applyPatch(w:Workflow,patch:NotesPatch):Promise<void> {
@@ -241,11 +282,20 @@ export class DiscordBot {
       w.savedParts.push(savedPart(field,value));
     }
     const result=applyFields(w,clean); this.store.saveWorkflow(w);
-    if (result.answeredCurrent) { w.step=result.next; w.currentMessageId=null; this.store.saveWorkflow(w); await this.sendStep(w); }
+    if (result.answeredCurrent) await this.advance(w,result.next);
   }
   private async skip(w:Workflow):Promise<void> {
     let next=w.step+1; while (next<STEPS.length && (w.answeredMask&(1<<next))) next++;
-    w.step=next; w.currentMessageId=null; this.store.saveWorkflow(w); await this.sendStep(w);
+    await this.advance(w,next);
+  }
+  /** Move to `next`, send its prompt, then retire the answered prompt's buttons. */
+  private async advance(w:Workflow,next:number):Promise<void> {
+    const answeredPrompt=w.currentMessageId;
+    w.step=next; w.currentMessageId=null; this.store.saveWorkflow(w);
+    await this.sendStep(w);
+    // Only once the next prompt is out: if that send failed, a stale prompt with live buttons is
+    // still better than one with none until the reconcile timer re-sends it.
+    if (answeredPrompt && w.channelId) void this.removeButtons(w.channelId,answeredPrompt);
   }
   private async finish(w:Workflow):Promise<void> {
     const recap=w.savedParts.length ? w.savedParts.join(", ") : "nothing recorded";
