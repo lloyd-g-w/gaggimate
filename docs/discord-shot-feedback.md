@@ -71,7 +71,17 @@ members*).
 
 ## 2. Configure GaggiMate
 
-Web UI → **Settings → Plugins → Discord Shot Feedback**:
+Web UI → **Settings → Plugins → Discord Shot Feedback**.
+
+First pick a mode:
+
+| Field | Meaning |
+|---|---|
+| **Gaggibot URL** | Base URL of the container as reachable *from the display*, e.g. `http://192.168.1.50:3102`. Setting this switches to **External Gaggibot** mode; the card shows the active mode as a badge. Leave empty for direct-from-display. |
+| **Bridge access token** | Must equal `GAGGIBOT_SHARED_TOKEN` on the container. Only shown in Gaggibot mode. |
+| **Device ID** | Optional stable per-machine label; empty uses `gaggimate-<wi-fi mac>`. Only shown in Gaggibot mode. |
+
+Then, in **direct-from-display** mode:
 
 | Field | Meaning |
 |---|---|
@@ -84,7 +94,30 @@ Web UI → **Settings → Plugins → Discord Shot Feedback**:
 | **AI API Key** | Sent as `Authorization: Bearer …` |
 | **AI Model** | e.g. `gpt-4o-mini` (default), or whatever your provider offers |
 
-Changing the enable toggle, token or users takes effect after **Save & Restart**.
+In Gaggibot mode the Discord token, users and AI settings live on the container instead, so those
+fields are hidden.
+
+Changing the enable toggle, token, users or mode takes effect after **Save & Restart**.
+
+### 2.1 Test it before pulling a shot
+
+Press **Send test message** on the card (after saving). It sends a real DM to every configured
+user — with a ✅ reaction, so it also proves the bot can react, which is how every step is answered.
+Nothing is recorded as a shot, so it is safe to press any time.
+
+The result appears under the button:
+
+| Message | Fix |
+|---|---|
+| ✓ *Test message sent to N Discord user(s)* | Working — you should have a DM |
+| ✗ *Bridge rejected the token* | Copy `GAGGIBOT_SHARED_TOKEN` into **Bridge access token** |
+| ✗ *Could not reach the bridge* | Wrong URL/port, or the container isn't running |
+| ✗ *…enable Message Content Intent…* | Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents** → enable **Message Content Intent**, then restart the container |
+| ✗ *Bridge reached Discord but the DM failed* | The bot must share a server with you and have **Send Messages** |
+| ✗ *Discord API … 401* (direct mode) | Bad/reset token |
+
+The same check from a shell, against the container: `POST /api/v1/test` with the bearer token.
+`GET /api/v1/ping` is a cheaper probe that makes no Discord call.
 
 ---
 
@@ -192,21 +225,31 @@ ratings are retried on the next poll.
 
 ## 5. How it works (for the curious)
 
-- Discord's real-time Gateway (WebSocket) is too heavy for the ESP32, so the plugin uses the
-  **REST API v10** with polling: `POST /users/@me/channels` (open DM, cached per user),
-  `POST /channels/{id}/messages` (send), `PUT /channels/{id}/messages/{id}/reactions/{emoji}/@me` (pre-seeded reactions), `GET /channels/{id}/messages/{id}` (read reactions),
-  `GET /channels/{id}/messages?after=…&limit=10` (replies; only *your* messages are processed,
-  so the bot's own acks are skipped).
+**Direct from display** — Discord's real-time Gateway (WebSocket) is too heavy for the ESP32, so
+this mode uses the **REST API v10** with polling: `POST /users/@me/channels` (open DM, cached per
+user), `POST /channels/{id}/messages` (send), `PUT /channels/{id}/messages/{id}/reactions/{emoji}/@me` (pre-seeded reactions), `GET /channels/{id}/messages/{id}` (read reactions),
+`GET /channels/{id}/messages?after=…&limit=10` (replies; only *your* messages are processed,
+so the bot's own acks are skipped).
 - All networking runs on a dedicated FreeRTOS task; the shot-saved event only queues the shot id.
 - HTTPS uses the firmware's bundled CA store (no insecure mode). 8 s timeouts, 16 KB body cap,
   `429 retry_after` honoured (capped at 30 s, one retry).
 - State is in RAM only: a reboot during the 30-minute window ends that window (fields already answered stay saved).
 
+**External Gaggibot** — the display makes only two kinds of request and never talks to Discord:
+`POST <base>/api/v1/shots` once per saved shot (idempotent on device + shot id), then
+`GET <base>/api/v1/feedback/<deviceId>?after=N` every 2 s (backing off to at most 5 minutes on
+failure). Each answered field becomes an ordered feedback event; the display applies it to shot
+history and only then acknowledges it with `POST …/ack`, so nothing is lost if it reboots — it
+adopts the bridge's durable acknowledgement watermark instead of replaying. Uploads and feedback
+both run on the plugin's own task, so neither blocks brewing or the web UI.
+
 ---
 
 ## 6. Troubleshooting
 
-Watch the display's serial log (`pio device monitor` or the sim log) for lines tagged `DiscordPlugin`:
+Start with **Send test message** (section 2.1): it reports the bridge's own diagnosis, which is
+usually more specific than anything below. For direct mode, watch the display's serial log
+(`pio device monitor` or the sim log) for lines tagged `DiscordPlugin`:
 
 | Log / symptom | Cause / fix |
 |---|---|
@@ -214,10 +257,15 @@ Watch the display's serial log (`pio device monitor` or the sim log) for lines t
 | `Discord API POST /users/@me/channels -> 401` | Bad/reset token — paste the current one |
 | `Discord API … -> 403` | Bot lacks *Send Messages* in the shared server, or the user blocks DMs |
 | `Discord API … -> 429` | Rate limited; the plugin backs off automatically |
-| `AI parse request failed: <code>` | Wrong URL/key/model; `401` = key, `404` = URL, `400` = model/provider incompatibility (the `response_format` retry already happened) |
-| No DM at all | Plugin not enabled + restarted; WiFi down (nothing is sent until reconnected); no enabled user rows |
-| Reaction not picked up | Click the bot's own reactions on the **current** step message (older steps are no longer watched); polled every 10 s within 30 min of the shot |
+| `Gaggibot shot upload failed for shot N -> 400` | Payload rejected by the bridge — a bug; the display sanitises the values it sends, so please report it |
+| `Gaggibot shot upload failed for shot N -> 401` | Bridge token mismatch or leading/trailing space in the token field |
+| `Gaggibot feedback poll failed -> 404` | URL points somewhere other than the container (the API lives under `/api/v1`) |
+| `Gaggibot returned invalid feedback JSON` | Something other than Gaggibot answered on that URL (a proxy or another web server) |
+| AI parse request failed: <code> | Wrong URL/key/model; `401` = key, `404` = URL, `400` = model/provider incompatibility (the `response_format` retry already happened) |
+| No DM at all | Plugin not enabled + restarted; WiFi down (nothing is sent until reconnected); no enabled user rows. In bridge mode also check the container is up and the URL/port match |
+| Reaction not picked up | Click the bot's own reactions on the **current** step message (older steps are no longer watched). Direct mode polls every 10 s; the bridge reacts instantly |
 | `Failed to add reaction on message …` | Rate-limited or DM blocked; you can still add the reaction yourself or answer by text |
 | `Failed to send step N …, will retry` | Transient network/rate-limit error; the step is re-sent on the next poll (10 s) |
+| Container log: `Used disallowed intents` | Enable **Message Content Intent** in the Discord Developer Portal (Gaggibot mode only) |
 
-Settings storage keys (NVS): `dsc`, `dsc_t`, `dsc_u`, `dsc_f`, `dsc_ai`, `dsc_url`, `dsc_key`, `dsc_m`.
+Settings storage keys (NVS): direct mode `dsc`, `dsc_t`, `dsc_u`, `dsc_f`, `dsc_ai`, `dsc_url`, `dsc_key`, `dsc_m`; bridge mode `ggb_url`, `ggb_tok`, `ggb_dev`.
