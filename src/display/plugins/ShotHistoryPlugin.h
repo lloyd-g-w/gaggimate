@@ -36,13 +36,21 @@ class ShotHistoryPlugin : public Plugin {
     // Returns the number of entries written to outEntries.
     size_t readRecentEntries(ShotIndexEntry *outEntries, size_t maxCount);
 
+    // Read a single index entry by shot id. Returns false if the index or the entry doesn't exist.
+    bool getIndexEntry(uint32_t id, ShotIndexEntry &out);
+
+    // Load /h/<id>.json, overwrite only the keys present in patch, recompute the ratio when both
+    // doseIn and doseOut are present, save the notes file, and update the index rating/volume
+    // exactly like req:history:notes:save does. Returns false if the notes file could not be written.
+    bool applyNotesPatch(uint32_t id, const JsonDocument &patch);
+
   private:
     // Index helper functions
     bool readIndexHeader(File &indexFile, ShotIndexHeader &header);
     int findEntryPosition(File &indexFile, const ShotIndexHeader &header, uint32_t shotId);
     bool readEntryAtPosition(File &indexFile, size_t position, ShotIndexEntry &entry);
     bool writeEntryAtPosition(File &indexFile, size_t position, const ShotIndexEntry &entry);
-    void saveNotes(const String &id, const JsonDocument &notes);
+    bool saveNotes(const String &id, const JsonDocument &notes);
     void loadNotes(const String &id, JsonDocument &notes);
     void startRecording();
 

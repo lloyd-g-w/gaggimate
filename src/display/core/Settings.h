@@ -106,6 +106,14 @@ class Settings {
     String getHomeAssistantPassword() const { return homeAssistantPassword.get(); }
     int getHomeAssistantPort() const { return homeAssistantPort.get(); }
     String getHomeAssistantTopic() const { return homeAssistantTopic.get(); }
+    bool isDiscord() const { return discord.get(); }
+    String getDiscordBotToken() const { return discordBotToken.get(); }
+    String getDiscordUsers() const { return discordUsers.get(); }
+    int getDiscordFields() const { return discordFields.get(); }
+    bool isDiscordAi() const { return discordAi.get(); }
+    String getDiscordAiUrl() const { return discordAiUrl.get(); }
+    String getDiscordAiKey() const { return discordAiKey.get(); }
+    String getDiscordAiModel() const { return discordAiModel.get(); }
     bool isMomentaryButtons() const { return momentaryButtons.get(); }
     String getTimezone() const { return timezone.get(); }
     bool isClock24hFormat() const { return clock24hFormat.get(); }
@@ -194,6 +202,14 @@ class Settings {
     void setHomeAssistantIP(const String &homeAssistantIP);
     void setHomeAssistantPort(int homeAssistantPort);
     void setHomeAssistantTopic(const String &homeAssistantTopic);
+    void setDiscord(bool discord);
+    void setDiscordBotToken(const String &discordBotToken);
+    void setDiscordUsers(const String &discordUsers);
+    void setDiscordFields(int discordFields);
+    void setDiscordAi(bool discordAi);
+    void setDiscordAiUrl(const String &discordAiUrl);
+    void setDiscordAiKey(const String &discordAiKey);
+    void setDiscordAiModel(const String &discordAiModel);
     void setMomentaryButtons(bool momentary_buttons);
     void setTimezone(String timezone);
     void setClockFormat(bool format_24h);
@@ -278,6 +294,14 @@ class Settings {
     Property<String> homeAssistantIP{registry, "ha_i", ""};
     Property<int> homeAssistantPort{registry, "ha_p", 1883};
     Property<String> homeAssistantTopic{registry, "ha_t", DEFAULT_HOME_ASSISTANT_TOPIC};
+    Property<bool> discord{registry, "dsc", false};
+    Property<String> discordBotToken{registry, "dsc_t", ""};
+    Property<String> discordUsers{registry, "dsc_u", ""};
+    Property<int> discordFields{registry, "dsc_f", 0x3F};
+    Property<bool> discordAi{registry, "dsc_ai", false};
+    Property<String> discordAiUrl{registry, "dsc_url", "https://api.openai.com/v1/chat/completions"};
+    Property<String> discordAiKey{registry, "dsc_key", ""};
+    Property<String> discordAiModel{registry, "dsc_m", "gpt-4o-mini"};
     Property<bool> momentaryButtons{registry, "mb", false};
     Property<String> timezone{registry, "tz", DEFAULT_TIMEZONE};
     Property<bool> clock24hFormat{registry, "clk_24h", true};

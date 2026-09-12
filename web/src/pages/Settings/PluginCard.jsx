@@ -1,11 +1,38 @@
 import { faTrashCan } from '@fortawesome/free-solid-svg-icons/faTrashCan';
+import { faEye } from '@fortawesome/free-solid-svg-icons/faEye';
+import { faEyeSlash } from '@fortawesome/free-solid-svg-icons/faEyeSlash';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import homekitImage from '../../assets/homekit.png';
 import { faCalendarDays } from '@fortawesome/free-solid-svg-icons/faCalendarDays';
 import { computed } from '@preact/signals';
+import { useState } from 'preact/hooks';
 import { machine } from '../../services/ApiService.js';
 
 const gearpumpAddon = computed(() => machine.value.capabilities.gearpumpAddon);
+
+const DISCORD_FIELD_OPTIONS = [
+  { bit: 0x01, label: 'Profile' },
+  { bit: 0x02, label: 'Duration' },
+  { bit: 0x04, label: 'Yield' },
+  { bit: 0x08, label: 'Temperature' },
+  { bit: 0x10, label: 'Pressure' },
+  { bit: 0x20, label: 'Flow' },
+];
+
+export function parseDiscordUsers(str) {
+  if (!str) return [];
+  return str
+    .split(';')
+    .filter(entry => entry.length > 0)
+    .map(entry => {
+      const [id, flag] = entry.split(':');
+      return { id: id ?? '', enabled: flag === '1' };
+    });
+}
+
+export function serializeDiscordUsers(list) {
+  return list.map(user => `${user.id ?? ''}:${user.enabled ? '1' : '0'}`).join(';');
+}
 
 export function PluginCard({
   formData,
@@ -16,6 +43,36 @@ export function PluginCard({
   updateAutoWakeupTime,
   updateAutoWakeupDay,
 }) {
+  const [showDiscordToken, setShowDiscordToken] = useState(false);
+  const [showDiscordAiKey, setShowDiscordAiKey] = useState(false);
+
+  const discordUsers = parseDiscordUsers(formData.discordUsers);
+  const discordFieldsValue =
+    formData.discordFields !== undefined ? Number(formData.discordFields) : 0x3f;
+
+  const updateDiscordUser = (index, patch) => {
+    const users = parseDiscordUsers(formData.discordUsers);
+    users[index] = { ...users[index], ...patch };
+    onChange('discordUsers')({ currentTarget: { value: serializeDiscordUsers(users) } });
+  };
+
+  const addDiscordUser = () => {
+    const users = parseDiscordUsers(formData.discordUsers);
+    users.push({ id: '', enabled: true });
+    onChange('discordUsers')({ currentTarget: { value: serializeDiscordUsers(users) } });
+  };
+
+  const removeDiscordUser = index => {
+    const users = parseDiscordUsers(formData.discordUsers);
+    users.splice(index, 1);
+    onChange('discordUsers')({ currentTarget: { value: serializeDiscordUsers(users) } });
+  };
+
+  const toggleDiscordField = bit => {
+    const next = discordFieldsValue ^ bit;
+    onChange('discordFields')({ currentTarget: { value: String(next) } });
+  };
+
   return (
     <div className='space-y-4'>
       <div className='bg-base-200 rounded-lg p-4'>
@@ -368,6 +425,193 @@ export function PluginCard({
                 value={formData.haTopic}
                 onChange={onChange('haTopic')}
               />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className='bg-base-200 rounded-lg p-4'>
+        <div className='flex items-center justify-between'>
+          <span className='text-xl font-medium'>Discord Shot Feedback</span>
+          <input
+            id='discord'
+            name='discord'
+            value='discord'
+            type='checkbox'
+            className='toggle toggle-primary'
+            checked={!!formData.discord}
+            onChange={onChange('discord')}
+            aria-label='Enable Discord Shot Feedback'
+          />
+        </div>
+        {formData.discord && (
+          <div className='border-base-300 mt-4 space-y-4 border-t pt-4'>
+            <p className='text-sm opacity-70'>
+              After every saved shot, GaggiMate will DM enabled Discord users a summary and
+              collect their rating, grind size, doses, bean and tasting notes via replies. Create
+              a bot at discord.com/developers, invite it to a server you share, enable Developer
+              Mode in Discord to copy your User ID.
+            </p>
+
+            <div className='form-control'>
+              <label htmlFor='discordBotToken' className='mb-2 block text-sm font-medium'>
+                Bot Token
+              </label>
+              <div className='join w-full'>
+                <input
+                  id='discordBotToken'
+                  name='discordBotToken'
+                  type={showDiscordToken ? 'text' : 'password'}
+                  className='input input-bordered join-item w-full'
+                  placeholder='Bot token'
+                  value={formData.discordBotToken}
+                  onChange={onChange('discordBotToken')}
+                />
+                <button
+                  type='button'
+                  className='btn btn-neutral join-item'
+                  onClick={() => setShowDiscordToken(!showDiscordToken)}
+                  aria-label={showDiscordToken ? 'Hide bot token' : 'Show bot token'}
+                >
+                  <FontAwesomeIcon icon={showDiscordToken ? faEyeSlash : faEye} />
+                </button>
+              </div>
+            </div>
+
+            <div className='form-control'>
+              <label className='mb-2 block text-sm font-medium'>Users</label>
+              <div className='space-y-2'>
+                {discordUsers.map((user, index) => (
+                  <div key={index} className='flex items-center gap-2'>
+                    <input
+                      type='text'
+                      className='input input-bordered w-full'
+                      placeholder='Discord User ID'
+                      value={user.id}
+                      onChange={e => updateDiscordUser(index, { id: e.currentTarget.value })}
+                      aria-label={`Discord user ${index + 1} ID`}
+                    />
+                    <input
+                      type='checkbox'
+                      className='toggle toggle-primary'
+                      checked={user.enabled}
+                      onChange={e =>
+                        updateDiscordUser(index, { enabled: e.currentTarget.checked })
+                      }
+                      aria-label={`Enable Discord user ${index + 1}`}
+                    />
+                    <button
+                      type='button'
+                      className='btn btn-ghost btn-sm'
+                      onClick={() => removeDiscordUser(index)}
+                      aria-label={`Remove Discord user ${index + 1}`}
+                    >
+                      <FontAwesomeIcon icon={faTrashCan} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type='button'
+                  className='btn btn-primary btn-sm'
+                  onClick={addDiscordUser}
+                  aria-label='Add user'
+                >
+                  Add user
+                </button>
+              </div>
+            </div>
+
+            <div className='form-control'>
+              <label className='mb-2 block text-sm font-medium'>Include in message</label>
+              <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
+                {DISCORD_FIELD_OPTIONS.map(option => (
+                  <label key={option.bit} className='flex items-center gap-2 text-sm'>
+                    <input
+                      type='checkbox'
+                      className='checkbox'
+                      checked={(discordFieldsValue & option.bit) !== 0}
+                      onChange={() => toggleDiscordField(option.bit)}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className='border-base-300 mt-4 space-y-4 border-t pt-4'>
+              <div className='flex items-center justify-between'>
+                <span className='text-lg font-medium'>AI Reply Parsing</span>
+                <input
+                  id='discordAi'
+                  name='discordAi'
+                  value='discordAi'
+                  type='checkbox'
+                  className='toggle toggle-primary'
+                  checked={!!formData.discordAi}
+                  onChange={onChange('discordAi')}
+                  aria-label='Enable AI Reply Parsing'
+                />
+              </div>
+              {formData.discordAi && (
+                <div className='space-y-4'>
+                  <p className='text-sm opacity-70'>
+                    Use any OpenAI-compatible chat endpoint to parse free-text replies into
+                    structured rating, grind size, doses, bean and notes fields.
+                  </p>
+                  <div className='form-control'>
+                    <label htmlFor='discordAiUrl' className='mb-2 block text-sm font-medium'>
+                      API URL
+                    </label>
+                    <input
+                      id='discordAiUrl'
+                      name='discordAiUrl'
+                      type='text'
+                      className='input input-bordered w-full'
+                      placeholder='https://api.openai.com/v1/chat/completions'
+                      value={formData.discordAiUrl}
+                      onChange={onChange('discordAiUrl')}
+                    />
+                  </div>
+                  <div className='form-control'>
+                    <label htmlFor='discordAiKey' className='mb-2 block text-sm font-medium'>
+                      API Key
+                    </label>
+                    <div className='join w-full'>
+                      <input
+                        id='discordAiKey'
+                        name='discordAiKey'
+                        type={showDiscordAiKey ? 'text' : 'password'}
+                        className='input input-bordered join-item w-full'
+                        placeholder='API key'
+                        value={formData.discordAiKey}
+                        onChange={onChange('discordAiKey')}
+                      />
+                      <button
+                        type='button'
+                        className='btn btn-neutral join-item'
+                        onClick={() => setShowDiscordAiKey(!showDiscordAiKey)}
+                        aria-label={showDiscordAiKey ? 'Hide API key' : 'Show API key'}
+                      >
+                        <FontAwesomeIcon icon={showDiscordAiKey ? faEyeSlash : faEye} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className='form-control'>
+                    <label htmlFor='discordAiModel' className='mb-2 block text-sm font-medium'>
+                      Model
+                    </label>
+                    <input
+                      id='discordAiModel'
+                      name='discordAiModel'
+                      type='text'
+                      className='input input-bordered w-full'
+                      placeholder='gpt-4o-mini'
+                      value={formData.discordAiModel}
+                      onChange={onChange('discordAiModel')}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

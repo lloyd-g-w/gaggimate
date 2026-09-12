@@ -163,6 +163,22 @@ void Settings::setHomeAssistantPassword(const String &homeAssistantPassword) {
     this->homeAssistantPassword.set(homeAssistantPassword);
 }
 
+void Settings::setDiscord(const bool discord) { this->discord.set(discord); }
+
+void Settings::setDiscordBotToken(const String &discordBotToken) { this->discordBotToken.set(discordBotToken); }
+
+void Settings::setDiscordUsers(const String &discordUsers) { this->discordUsers.set(discordUsers); }
+
+void Settings::setDiscordFields(int discordFields) { this->discordFields.set(discordFields); }
+
+void Settings::setDiscordAi(const bool discordAi) { this->discordAi.set(discordAi); }
+
+void Settings::setDiscordAiUrl(const String &discordAiUrl) { this->discordAiUrl.set(discordAiUrl); }
+
+void Settings::setDiscordAiKey(const String &discordAiKey) { this->discordAiKey.set(discordAiKey); }
+
+void Settings::setDiscordAiModel(const String &discordAiModel) { this->discordAiModel.set(discordAiModel); }
+
 void Settings::setMomentaryButtons(bool momentary_buttons) { momentaryButtons.set(momentary_buttons); }
 
 void Settings::setTimezone(String timezone) { this->timezone.set(timezone); }

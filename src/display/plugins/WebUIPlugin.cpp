@@ -711,6 +711,20 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setHomeAssistantPort(request->arg("haPort").toInt());
             if (request->hasArg("haTopic"))
                 settings->setHomeAssistantTopic(request->arg("haTopic"));
+            settings->setDiscord(request->hasArg("discord"));
+            if (request->hasArg("discordBotToken"))
+                settings->setDiscordBotToken(request->arg("discordBotToken"));
+            if (request->hasArg("discordUsers"))
+                settings->setDiscordUsers(request->arg("discordUsers"));
+            if (request->hasArg("discordFields"))
+                settings->setDiscordFields(request->arg("discordFields").toInt());
+            settings->setDiscordAi(request->hasArg("discordAi"));
+            if (request->hasArg("discordAiUrl"))
+                settings->setDiscordAiUrl(request->arg("discordAiUrl"));
+            if (request->hasArg("discordAiKey"))
+                settings->setDiscordAiKey(request->arg("discordAiKey"));
+            if (request->hasArg("discordAiModel"))
+                settings->setDiscordAiModel(request->arg("discordAiModel"));
             settings->setMomentaryButtons(request->hasArg("momentaryButtons"));
             settings->setDelayAdjust(request->hasArg("delayAdjust"));
             if (request->hasArg("brewDelay"))
@@ -827,6 +841,14 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["haIP"] = settings.getHomeAssistantIP();
     doc["haPort"] = settings.getHomeAssistantPort();
     doc["haTopic"] = settings.getHomeAssistantTopic();
+    doc["discord"] = settings.isDiscord();
+    doc["discordBotToken"] = settings.getDiscordBotToken();
+    doc["discordUsers"] = settings.getDiscordUsers();
+    doc["discordFields"] = settings.getDiscordFields();
+    doc["discordAi"] = settings.isDiscordAi();
+    doc["discordAiUrl"] = settings.getDiscordAiUrl();
+    doc["discordAiKey"] = settings.getDiscordAiKey();
+    doc["discordAiModel"] = settings.getDiscordAiModel();
     doc["pid"] = settings.getPid();
     doc["pumpModelCoeffs"] = settings.getPumpModelCoeffs();
     doc["pumpSlipCoeffs"] = settings.getPumpSlipCoeffs();

@@ -570,14 +570,21 @@ void ShotHistoryPlugin::handleRequest(JsonDocument &request, JsonDocument &respo
     }
 }
 
-void ShotHistoryPlugin::saveNotes(const String &id, const JsonDocument &notes) {
+bool ShotHistoryPlugin::saveNotes(const String &id, const JsonDocument &notes) {
     File file = fs->open("/h/" + id + ".json", FILE_WRITE);
-    if (file) {
-        String notesStr;
-        serializeJson(notes, notesStr);
-        file.print(notesStr);
-        file.close();
+    if (!file) {
+        ESP_LOGE("ShotHistoryPlugin", "Failed to open notes file for shot %s", id.c_str());
+        return false;
     }
+    String notesStr;
+    serializeJson(notes, notesStr);
+    // Verify the full payload landed (a full or failing filesystem short-writes silently).
+    const bool ok = file.print(notesStr) == notesStr.length();
+    file.close();
+    if (!ok) {
+        ESP_LOGE("ShotHistoryPlugin", "Short write saving notes for shot %s", id.c_str());
+    }
+    return ok;
 }
 
 void ShotHistoryPlugin::loadNotes(const String &id, JsonDocument &notes) {
@@ -587,6 +594,62 @@ void ShotHistoryPlugin::loadNotes(const String &id, JsonDocument &notes) {
         file.close();
         deserializeJson(notes, notesStr);
     }
+}
+
+bool ShotHistoryPlugin::getIndexEntry(uint32_t id, ShotIndexEntry &out) {
+    File indexFile = fs->open("/h/index.bin", "r");
+    if (!indexFile) {
+        return false;
+    }
+    ShotIndexHeader header{};
+    if (!readIndexHeader(indexFile, header)) {
+        indexFile.close();
+        return false;
+    }
+    int pos = findEntryPosition(indexFile, header, id);
+    bool ok = pos >= 0 && readEntryAtPosition(indexFile, pos, out);
+    indexFile.close();
+    return ok;
+}
+
+// Notes file access mirrors req:history:notes:get/save (handleRequest, above): the id string is
+// used verbatim as the filename, unpadded, matching what the frontend sends as shot.id (the raw
+// index entry id). No cross-task guard exists there either (WebUIPlugin calls handleRequest from
+// the AsyncTCP task while recording runs on the main task) — this mirrors that same unguarded
+// file access rather than inventing a new lock.
+bool ShotHistoryPlugin::applyNotesPatch(uint32_t id, const JsonDocument &patch) {
+    String sid = String(id);
+    JsonDocument notes(&psramAllocator);
+    loadNotes(sid, notes);
+
+    for (JsonPairConst kv : patch.as<JsonObjectConst>()) {
+        notes[kv.key()] = kv.value();
+    }
+
+    if (notes["doseIn"].is<String>() && notes["doseOut"].is<String>() && !notes["doseIn"].as<String>().isEmpty() &&
+        !notes["doseOut"].as<String>().isEmpty()) {
+        float doseIn = notes["doseIn"].as<String>().toFloat();
+        float doseOut = notes["doseOut"].as<String>().toFloat();
+        if (doseIn > 0.0f && doseOut > 0.0f) {
+            notes["ratio"] = String(doseOut / doseIn, 2);
+        }
+    }
+
+    if (!saveNotes(sid, notes)) {
+        // Do not advance the index metadata for notes that were never persisted.
+        return false;
+    }
+
+    uint8_t rating = notes["rating"].as<uint8_t>();
+    uint16_t volume = 0;
+    if (notes["doseOut"].is<String>() && !notes["doseOut"].as<String>().isEmpty()) {
+        float doseOut = notes["doseOut"].as<String>().toFloat();
+        if (doseOut > 0.0f) {
+            volume = encodeUnsigned(doseOut, WEIGHT_SCALE, WEIGHT_MAX_VALUE);
+        }
+    }
+    updateIndexMetadata(id, rating, volume);
+    return true;
 }
 
 void ShotHistoryPlugin::loopTask(void *arg) {

@@ -26,6 +26,7 @@
 #include <display/plugins/WebUIPlugin.h>
 #ifndef GAGGIMATE_SIM // network/BLE plugins are device-only
 #include <display/plugins/BLEScalePlugin.h>
+#include <display/plugins/DiscordPlugin.h>
 #include <display/plugins/HomekitPlugin.h>
 #include <display/plugins/ImprovPlugin.h>
 #include <display/plugins/MQTTPlugin.h>
@@ -103,6 +104,9 @@ void Controller::setup() {
 #ifndef GAGGIMATE_SIM // MQTT/HomeAssistant is device-only
     if (settings.isHomeAssistant()) {
         pluginManager->registerPlugin(new MQTTPlugin());
+    }
+    if (settings.isDiscord()) {
+        pluginManager->registerPlugin(new DiscordPlugin());
     }
 #endif
     pluginManager->registerPlugin(new WebUIPlugin());
