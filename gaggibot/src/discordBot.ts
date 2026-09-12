@@ -44,7 +44,10 @@ export class DiscordBot {
   private reconcileTimer: NodeJS.Timeout | null = null;
   ready = false;
 
-  constructor(private cfg:Config, private store:Store, private log:Log) {}
+  constructor(private cfg:Config, private store:Store, private log:Log) {
+    const retired=store.ensureFlowVersion(STEPS.join(","));
+    if (retired) log.warn("Step layout changed since the last run; abandoned in-flight conversations (their answers are kept)",{retired});
+  }
 
   private createClient(): Client {
     const client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.DirectMessages,GatewayIntentBits.DirectMessageReactions,GatewayIntentBits.MessageContent], partials:[Partials.Channel,Partials.Message,Partials.Reaction] });

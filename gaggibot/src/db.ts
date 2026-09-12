@@ -34,7 +34,23 @@ export class Store {
       CREATE TABLE IF NOT EXISTS acknowledgements (
         device_id TEXT PRIMARY KEY, through_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+  }
+
+  /**
+   * Workflow rows store `step` and `answeredMask` as indices into the step list. If the list changes
+   * between deploys, an in-flight conversation would resume under the wrong numbering (e.g. resume at
+   * "Balance" while the user still sees a "Note" card). Abandon such flows instead: everything they
+   * already recorded is queued and safe. Returns how many were retired.
+   */
+  ensureFlowVersion(version: string): number {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key='flow_version'").get() as {value:string}|undefined;
+    if (row?.value === version) return 0;
+    const retired = row === undefined ? 0
+      : this.db.prepare("UPDATE workflows SET status='superseded',current_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE status IN ('active','queued')").run().changes;
+    this.db.prepare("INSERT INTO meta(key,value) VALUES('flow_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(version);
+    return retired;
   }
 
   insertShot(payload: ShotPayload): boolean {
