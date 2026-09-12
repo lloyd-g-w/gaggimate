@@ -60,10 +60,21 @@ export function patchForReuse(w: Workflow): NotesPatch | null {
 
 /** Text shown for a previous value, e.g. "3/5", "18 g", "Ethiopia Guji". */
 export function previousLabel(field: Step, value: unknown): string {
-  const text=String(value).slice(0,120);
+  const text=clipUnits(String(value),120);
   if (field === "rating") return `${text}/5`;
   if (field === "doseIn") return `${text} g`;
   return text;
+}
+
+/**
+ * Cut to at most `maxUnits` UTF-16 units without splitting a surrogate pair. Both Discord and the
+ * discord.js builders validate lengths in UTF-16 units, and a lone surrogate from a naive slice of
+ * an emoji-bearing bean name can be rejected as an invalid form body.
+ */
+export function clipUnits(s: string, maxUnits: number): string {
+  if (s.length <= maxUnits) return s;
+  const cut=s.charCodeAt(maxUnits-1);
+  return s.slice(0, cut >= 0xd800 && cut <= 0xdbff ? maxUnits-1 : maxUnits);
 }
 
 /** Button custom ids, kept short: gm:rate:<1-5>, gm:reuse, gm:skip. */
@@ -97,7 +108,7 @@ export function stepButtons(w: Workflow): StepButton[][] {
   const rows:StepButton[][]=[];
   if (field === "rating") rows.push([1,2,3,4,5].map(n=>({customId:`${BUTTON_PREFIX}rate:${n}`,label:String(n)})));
   const controls:StepButton[]=[];
-  if (field !== "notes" && previous !== undefined) controls.push({customId:`${BUTTON_PREFIX}reuse`,label:`↩️ Reuse ${previousLabel(field,previous).slice(0,60)}`,primary:true});
+  if (field !== "notes" && previous !== undefined) controls.push({customId:`${BUTTON_PREFIX}reuse`,label:`↩️ Reuse ${clipUnits(previousLabel(field,previous),60)}`,primary:true});
   controls.push({customId:`${BUTTON_PREFIX}skip`,label:"➡️ Skip"});
   rows.push(controls);
   return rows;
@@ -105,7 +116,7 @@ export function stepButtons(w: Workflow): StepButton[][] {
 export function savedPart(field: keyof NotesPatch, value: unknown): string {
   const label:Record<keyof NotesPatch,string>={rating:"rating",grindSetting:"grind",doseIn:"in",doseOut:"out",beanType:"bean",notes:"note"};
   const unit=field === "doseIn" || field === "doseOut" ? " g" : "";
-  return `${label[field]} ${String(value).slice(0,60)}${unit}`;
+  return `${label[field]} ${clipUnits(String(value),60)}${unit}`;
 }
 export function stepMessage(w: Workflow): string {
   const field=STEPS[w.step]; if (!field) return "";
@@ -123,5 +134,5 @@ export function stepMessage(w: Workflow): string {
   if (field !== "notes" && previous !== undefined) legend.push(`↩️ to reuse *${previousLabel(field,previous)}*`);
   legend.push("➡️ to skip");
   out += "-# " + legend.join(" · ");
-  return out.slice(0,2000);
+  return clipUnits(out,2000);
 }

@@ -186,6 +186,12 @@ describe("gaggibot conversation (dry run)",()=>{
       await flush();
       const state=await (await h.call("/api/v1/_dev/state")).json() as {workflows:{shotId:number;status:string}[]};
       expect(state.workflows.map(w=>w.shotId)).toEqual([601]); // the older flow is superseded, not doubled
+      // The superseded prompt's buttons were retired, so a stale tap can't ack-and-do-nothing.
+      const prompts=(await h.outbox()).filter(m=>m.content.includes("· step "));
+      expect(prompts[0]!.content).toContain("Shot #600");
+      expect(prompts[0]!.buttonsRemoved).toBe(true);
+      expect(prompts.at(-1)!.content).toContain("Shot #601");
+      expect(prompts.at(-1)!.buttons.length).toBeGreaterThan(0);
     } finally { h.server.close(); await h.bot.stop(); }
   });
 

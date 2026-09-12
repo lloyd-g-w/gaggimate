@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, type Interaction, type Message, type MessageReaction, type PartialMessageReaction, type User, type PartialUser } from "discord.js";
 import type { Config } from "./config.js";
-import { actionFromCustomId, actionFromEmoji, applyFields, BUTTON_PREFIX, fieldsIn, normalizePatch, patchForReuse, savedPart, stepButtons, stepMessage, type StepAction, type StepButton } from "./flow.js";
+import { actionFromCustomId, actionFromEmoji, applyFields, BUTTON_PREFIX, clipUnits, fieldsIn, normalizePatch, patchForReuse, savedPart, stepButtons, stepMessage, type StepAction, type StepButton } from "./flow.js";
 import { parseReply, parseWithAi } from "./parser.js";
 import { STEPS, type NotesPatch, type ShotPayload, type Workflow } from "./types.js";
 import type { Store } from "./db.js";
@@ -35,7 +35,7 @@ export class DiscordBot {
 
   private createClient(): Client {
     const client = new Client({ intents:[GatewayIntentBits.Guilds,GatewayIntentBits.DirectMessages,GatewayIntentBits.DirectMessageReactions,GatewayIntentBits.MessageContent], partials:[Partials.Channel,Partials.Message,Partials.Reaction] });
-    client.once("ready", async () => {
+    client.once("clientReady", async () => {
       this.ready = true;
       this.loginError = "";
       this.retryMs = 2000;
@@ -165,6 +165,14 @@ export class DiscordBot {
     if (!this.lock(w)) return;
     try {
       this.store.supersedeOtherWorkflows(w.userId,w.id);
+      // A superseded flow's prompt would otherwise keep live buttons that ack a tap and then do
+      // nothing (its message id no longer anchors any workflow). Retire them.
+      for (const old of this.store.listWorkflows(["superseded"])) {
+        if (old.userId === w.userId && old.channelId && old.currentMessageId) {
+          void this.removeButtons(old.channelId, old.currentMessageId);
+          old.currentMessageId=null; this.store.saveWorkflow(old);
+        }
+      }
       const payload=this.store.getShot(w.deviceId,w.shotId); if (!payload) throw new Error("shot missing");
       w.status="active";
       const sent=await this.deliver(w.userId,w.channelId,this.summary(payload),[]);
@@ -203,11 +211,13 @@ export class DiscordBot {
     }
     const client=this.requireClient();
     // users.createDM(id) opens (or returns the cached) DM in one call; fetching the user first was a
-    // second round-trip on every new conversation.
-    const channel=channelId ? await client.channels.fetch(channelId) : await client.users.createDM(userId);
+    // second round-trip on every new conversation. If a stored channel id fails to resolve (e.g.
+    // after a restart it is no longer cached and the GET fails), fall back to reopening the DM
+    // rather than retrying the same failing fetch forever.
+    const channel=(channelId ? await client.channels.fetch(channelId).catch(()=>null) : null) ?? await client.users.createDM(userId);
     if (!channel?.isSendable()) throw new Error("DM channel unavailable");
     const components=buttons.map(row=>new ActionRowBuilder<ButtonBuilder>().addComponents(
-      row.map(b=>new ButtonBuilder().setCustomId(b.customId).setLabel(b.label.slice(0,80)).setStyle(b.primary?ButtonStyle.Primary:ButtonStyle.Secondary))));
+      row.map(b=>new ButtonBuilder().setCustomId(b.customId).setLabel(clipUnits(b.label,80)).setStyle(b.primary?ButtonStyle.Primary:ButtonStyle.Secondary))));
     const message=await channel.send({content,components});
     return {channelId:channel.id,messageId:message.id};
   }
@@ -264,7 +274,13 @@ export class DiscordBot {
   /** Shared by button taps, reactions and the dry-run endpoint. Anchored to the live prompt. */
   async handleUserAction(userId:string,messageId:string,action:StepAction):Promise<void> {
     const w=this.store.getActiveByUser(userId);
-    if (!w || messageId !== w.currentMessageId || !this.lock(w)) return;
+    if (!w || messageId !== w.currentMessageId) return;
+    if (!this.lock(w)) {
+      // Arrived while the previous answer is still being processed (prompt send or AI parse in
+      // flight). The buttons stay on the message, so the user can simply tap again.
+      this.log.debug("Dropped an action while the workflow was busy",{workflow:w.id,action:action.type});
+      return;
+    }
     try {
       if (action.type === "rate") { if (w.step === 0) await this.applyPatch(w,{rating:action.value}); return; }
       if (action.type === "reuse") { const patch=patchForReuse(w); if (patch) await this.applyPatch(w,patch); return; }
