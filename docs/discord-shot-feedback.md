@@ -101,7 +101,7 @@ Your last shot was *18.0 g* in.
 
 Send the dose for this shot as a message, e.g. 18
 
-↩️ reuse *18.0 g*   ➡️ skip
+-# React ↩️ to reuse *18.0 g* · ➡️ to skip
 ```
 
 | Step | Answer by text | Reactions pre-added by the bot |

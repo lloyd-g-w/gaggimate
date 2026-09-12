@@ -60,6 +60,7 @@ constexpr int FIELD_BIT_TEMP = 0x08;
 constexpr int FIELD_BIT_PRESSURE = 0x10;
 constexpr int FIELD_BIT_FLOW = 0x20;
 
+constexpr uint32_t DISCORD_TASK_STACK_BYTES = 16384;
 constexpr size_t DISCORD_MAX_MESSAGE_BYTES = 2000; // Discord hard limit on message content
 constexpr size_t SHOWN_VALUE_MAX_BYTES = 120;       // previous value as rendered in a step prompt
 constexpr size_t RECAP_PART_MAX_BYTES = 60;         // one "grind 3.5" entry in the recap
@@ -146,7 +147,10 @@ void DiscordPlugin::setup(Controller *c, PluginManager *pm) {
     pluginManager = pm;
     wifiClient.setCACertBundle(x509_crt_imported_bundle_bin_start);
     pluginManager->on("evt:history-shot-saved", [this](Event const &e) { enqueueShot(e.getInt("id")); });
-    xTaskCreatePinnedToCore(loopTask, "DiscordPlugin::loop", configMINIMAL_STACK_SIZE * 8, this, 1, &taskHandle, 0);
+    // This task performs mbedTLS handshakes (HTTPClient + WiFiClientSecure), ArduinoJson work and
+    // String building. configMINIMAL_STACK_SIZE is only 768 words on the S3, so *8 (~6 KB) was far
+    // too small and overflowed on the second HTTPS request. TLS alone needs ~8-10 KB of stack.
+    xTaskCreatePinnedToCore(loopTask, "DiscordPlugin::loop", DISCORD_TASK_STACK_BYTES, this, 1, &taskHandle, 0);
 }
 
 void DiscordPlugin::loopTask(void *arg) {
@@ -358,12 +362,13 @@ String DiscordPlugin::buildStepMessage(const DiscordPendingShot &shot) const {
         msg += String(def.prompt) + "\n\n";
     }
 
+    // Small subtext legend for the reactions the bot adds below (the reactions are the controls).
     if (shot.step == DISCORD_STEP_RATING) {
-        msg += "\xE2\x9E\xA1\xEF\xB8\x8F skip";
+        msg += "-# React 1\xEF\xB8\x8F\xE2\x83\xA3\xE2\x80\x93" "5\xEF\xB8\x8F\xE2\x83\xA3 to rate \xC2\xB7 \xE2\x9E\xA1\xEF\xB8\x8F to skip";
     } else if (!last.isEmpty()) {
-        msg += "\xE2\x86\xA9\xEF\xB8\x8F reuse *" + last + def.unit + "*   \xE2\x9E\xA1\xEF\xB8\x8F skip";
+        msg += "-# React \xE2\x86\xA9\xEF\xB8\x8F to reuse *" + last + def.unit + "* \xC2\xB7 \xE2\x9E\xA1\xEF\xB8\x8F to skip";
     } else {
-        msg += "\xE2\x9E\xA1\xEF\xB8\x8F skip";
+        msg += "-# React \xE2\x9E\xA1\xEF\xB8\x8F to skip";
     }
     return msg;
 }
@@ -391,6 +396,8 @@ bool DiscordPlugin::sendStepMessage(DiscordPendingShot &shot) {
         vTaskDelay(pdMS_TO_TICKS(300));
     }
     addReaction(shot.channelId, id, SKIP_EMOJI_URLENC);
+    ESP_LOGI("DiscordPlugin", "Step %d sent for shot %u (task stack free: %u bytes)", shot.step + 1, shot.shotId,
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
     return true;
 }
 
@@ -661,7 +668,8 @@ DiscordPlugin::HttpResult DiscordPlugin::discordRequest(const char *method, cons
             code = http.GET();
         }
         String body;
-        if (http.getSize() <= static_cast<int>(DISCORD_MAX_BODY_BYTES)) {
+        // 204 (reactions) has no body: reading it would block until the keep-alive timeout.
+        if (code != 204 && code > 0 && http.getSize() <= static_cast<int>(DISCORD_MAX_BODY_BYTES)) {
             body = http.getString();
         }
         http.end();
@@ -740,7 +748,8 @@ void DiscordPlugin::addReaction(const String &channelId, const String &messageId
                                              emojiUrlEncoded + "/@me",
                                   "");
     if (r.status < 200 || r.status >= 300) {
-        ESP_LOGW("DiscordPlugin", "Failed to add reaction on message %s", messageId.c_str());
+        ESP_LOGW("DiscordPlugin", "Failed to add reaction %s on message %s -> %d", emojiUrlEncoded, messageId.c_str(),
+                 r.status);
     }
 }
 
