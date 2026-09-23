@@ -25,8 +25,9 @@ class GaggiMateServer {
 
     GaggiMateServer();
 
-    void init(const String &deviceName, const String &hardware, const String &version,
-              const gm::DeviceCapabilities &capabilities);
+    // pairingWindow: let a new display replace the paired one this boot (steam switch held at power-on).
+    void init(const String &deviceName, const String &hardware, const String &version, const gm::DeviceCapabilities &capabilities,
+              bool pairingWindow = false);
     bool isConnected() const { return _endpoint.isConnected(); }
     bool isUpdating() const { return _transport.isUpdating(); }
 
@@ -34,7 +35,7 @@ class GaggiMateServer {
 
     // Build a payload without sending; sendSensorData reports boiler 0 (the wire format supports several).
     gm::Payload buildSensorData(float temperature, float pressure, float puckFlow, float pumpFlow, float puckResistance,
-                                float pumpPower = 0.0f, float heaterPower = 0.0f);
+                                float pumpPower = 0.0f, float heaterPower = 0.0f, float waterPumped = 0.0f);
     gm::Payload buildButtonState(uint8_t index, bool pressed);
     gm::Payload buildAutotuneResult(float kp, float ki, float kd, float kf);
     gm::Payload buildVolumetricMeasurement(float volume);

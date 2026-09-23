@@ -7,7 +7,10 @@
 #include "SystemInfo.h"
 #include <FS.h>
 #include <WiFi.h>
+#include <atomic>
+#include <display/core/ButtonHandler.h>
 #include <display/core/ProfileManager.h>
+#include <display/core/WarningManager.h>
 #include <display/core/process/Process.h>
 #include <atomic>
 #include <mutex>
@@ -21,6 +24,18 @@ const IPAddress WIFI_AP_IP(4, 4, 4, 1); // the IP address the web server, Samsun
 const IPAddress WIFI_SUBNET_MASK(255, 255, 255, 0); // no need to change: https://avinetworks.com/glossary/subnet-mask/
 
 enum class VolumetricMeasurementSource { INACTIVE, FLOW_ESTIMATION, BLUETOOTH };
+
+// What the display's standby label reports; shared with the web UI so headless users see the same thing.
+enum SystemState {
+    SYSTEM_STARTING,
+    SYSTEM_WAITING_CONTROLLER,
+    SYSTEM_READY,
+    SYSTEM_UPDATING,
+    SYSTEM_AUTOTUNING,
+    SYSTEM_PROTOCOL_MISMATCH,
+    SYSTEM_ERROR
+};
+const char *systemStateKey(SystemState state);
 
 class Controller {
   public:
@@ -47,6 +62,7 @@ class Controller {
     virtual float getCurrentTemp() const { return currentTemp; }
     bool isActive() const;
     bool isGrindActive() const;
+    bool isBrewActive() const;
     bool isUpdating() const;
     bool isAutotuning() const;
     bool isReady() const;
@@ -64,6 +80,7 @@ class Controller {
     virtual float getCurrentHeaterPower() const { return currentHeaterPower; }
     virtual float getCurrentPuckResistance() const { return currentPuckResistance; }
     virtual float getCurrentCoffeeVolume() const { return currentCoffeeVolume; }
+    virtual float getCurrentWaterPumped() const { return currentWaterPumped; }
 
     bool isTaskHealthy() const { return is_task_healthy(eTaskGetState(logicTaskHandle)); }
 
@@ -81,6 +98,8 @@ class Controller {
 #endif
     bool isErrorState() const { return error > 0; }
     int getError() const { return error; }
+    SystemState getSystemState() const;
+    String getSystemStateMessage() const;
 
     // Event callback methods
     void updateLastAction();
@@ -90,7 +109,8 @@ class Controller {
     void lowerBrewTarget();
     void raiseGrindTarget();
     void lowerGrindTarget();
-    void activate();
+    void activate(bool ignoreWarnings = false);
+    void cancelBrewConfirm();
     void deactivate();
     void clear();
     void activateGrind();
@@ -107,6 +127,7 @@ class Controller {
     void setVolumetricOverride(bool override) { volumetricOverride = override; }
     bool isBluetoothScaleHealthy() const;
     void onFlush();
+    void onFlushRelease(); // ends a hold-to-flush; no-op otherwise
     int getWaterLevel() const {
         float reversedLevel = static_cast<float>(settings.getEmptyTankDistance()) -
                               static_cast<float>(std::min(settings.getEmptyTankDistance(), tofDistance));
@@ -117,6 +138,10 @@ class Controller {
 
     void onVolumetricDelete();
     bool isLowWaterLevel() const { return getWaterLevel() < 20; };
+    bool isSteamSwitchOn() const { return steamSwitchOn; }
+    bool isFlushPending() const { return flushPending; }
+    WarningManager &getWarnings() { return warnings; }
+    const WarningManager &getWarnings() const { return warnings; }
 
     SystemInfo getSystemInfo() const { return systemInfo; }
 
@@ -149,24 +174,25 @@ class Controller {
     bool isActiveLocked() const { return currentProcess != nullptr && currentProcess->isActive(); }
     void startProcessLocked(Process *process, std::vector<const char *> &events);
     void deactivateLocked(std::vector<const char *> &events);
+    void afterDeactivate();
     void clearLocked(std::vector<const char *> &events);
     void dispatchEvents(const std::vector<const char *> &events);
 
     // Event handlers
     void onTempRead(float temperature);
+    void onPressureRead(float pressure);
 
-    void handleBrewButton(int brewButtonStatus);
-    void handleSteamButton(int steamButtonStatus);
-    void handleWaterButton(int buttonStatus);
-    void handleProfileButton(int buttonStatus, String id);
+    // Physical buttons (GM-200): raw edges -> ButtonHandler -> behavior handlers. `pressed`
+    // false only reaches the handlers for latching switches; momentary presses toggle.
+    ButtonHandler::Config buttonConfig() const;
+    void onButtonEvent(uint8_t index, ButtonHandler::Event event);
+    void runButtonBehavior(const String &behavior, bool pressed);
+    void handleBrewButton(bool pressed);
+    void handleSteamButton(bool pressed);
+    void handleWaterButton(bool pressed);
+    void handleFlushButton(bool pressed);
+    void handleProfileButton(bool pressed, const String &id);
     void handleProfileUpdate();
-    // Momentary brew button: the press action (performBrewButtonAction, the
-    // original switch(getMode()) body) is deferred until either the hold
-    // threshold elapses in loop() (-> startHoldFlush) or the button is
-    // released first (-> short press, same as before this feature).
-    void performBrewButtonAction();
-    void startHoldFlush();
-    void stopHoldFlush();
 
     // Private Attributes
 #ifndef GAGGIMATE_HEADLESS
@@ -174,10 +200,12 @@ class Controller {
     Driver *driver = nullptr;
 #endif
     GaggiMateClient comms;
+    ButtonHandler buttons;
     hw_timer_t *timer = nullptr;
     Settings settings;
     PluginManager *pluginManager{};
     ProfileManager *profileManager{};
+    WarningManager warnings;
 
     int mode = MODE_BREW;
     float currentTemp = 0;
@@ -189,6 +217,7 @@ class Controller {
     float currentHeaterPower = 0.0f;
     float currentPuckResistance = 0.0f;
     float currentCoffeeVolume = 0.0f;
+    float currentWaterPumped = 0.0f;
     float targetFlow = 0.0f;
     int tofDistance = 0;
 
@@ -196,12 +225,16 @@ class Controller {
 
     // Last control values sent to the controller. updateControl() only
     // transmits components that differ from these (the controller is stateful
-    // and delivery is acknowledged). Reset on (re)connect to force a full resend.
+    // and delivery is acknowledged). Cleared on (re)connect, a dropped frame and link settle.
     BoilerCommand lastBoiler{};
     PumpCommand lastPump{};
     RelayCommand lastRelay{};
     bool lastAlt = false;
-    bool controlStateSent = false;
+    std::atomic<bool> controlStateSent{false};
+    std::atomic<bool> stateResendPending{false}; // set from comms threads, serviced in loop()
+    unsigned long settleResendAt = 0;            // one full re-send once a fresh link has settled (0 = none)
+    static const unsigned long STATE_SETTLE_RESEND_MS = 5000;
+    void requestStateResend() { stateResendPending = true; }
 
     // BLE connection-interval priority: tight while a process runs, relaxed when
     // idle (frees radio airtime for Wi-Fi). Tracks the last requested state.
@@ -213,23 +246,6 @@ class Controller {
     Process *currentProcess = nullptr;
     Process *lastProcess = nullptr;
 
-    // Momentary brew button hold-to-flush state machine. Edges arrive on the
-    // BLE callback task (handleBrewButton) while the hold threshold fires on
-    // the main task (loop()), so every transition claims ownership atomically
-    // (exchange/CAS) - a plain check-then-store could double-fire an action:
-    //   IDLE -> PENDING     press (supersedes any stale state)
-    //   PENDING -> IDLE     release before threshold: short-press action
-    //   PENDING -> STARTING loop() wins the threshold race
-    //   STARTING -> FLUSHING startHoldFlush() succeeded, no release meanwhile
-    //   any -> IDLE         release; a release seen as STARTING is honored by
-    //                       the starter's failed CAS, which stops the flush.
-    // holdFlushProcess (guarded by processMutex) records which process the
-    // hold owns so a late release can never deactivate an unrelated process;
-    // deactivateLocked() nulls it the moment that process ends for any reason.
-    enum class BrewHoldState : uint8_t { IDLE, PENDING, STARTING, FLUSHING };
-    std::atomic<BrewHoldState> brewHoldState{BrewHoldState::IDLE};
-    std::atomic<uint32_t> brewButtonPressStart{0};
-    Process *holdFlushProcess = nullptr;
 
     unsigned long grindActiveUntil = 0;
     unsigned long lastPing = 0;
@@ -256,6 +272,8 @@ class Controller {
     bool volumetricOverride = false;
     bool processCompleted = false;
     bool steamReady = false;
+    bool steamSwitchOn = false;
+    bool flushPending = false; // no flush since entering brew mode, waking up, or the last shot
     bool sdcard = false;
     FS *storageFs = nullptr;
     int error = 0;

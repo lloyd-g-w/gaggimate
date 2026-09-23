@@ -19,6 +19,16 @@ GaggiMateController::GaggiMateController(String version) : _version(std::move(ve
 char albaSwTxBuffer[128];
 char albaSwRxBuffer[128];
 
+bool GaggiMateController::isSteamSwitchOn() const {
+    pinMode(_config.steamButtonPin, INPUT_PULLUP);
+    for (int i = 0; i < 5; i++) { // active low; require a steady reading so a bouncing contact never opens the window
+        if (digitalRead(_config.steamButtonPin) != LOW)
+            return false;
+        delay(10);
+    }
+    return true;
+}
+
 void GaggiMateController::setup() {
     delay(5000);
     detectBoard();
@@ -52,8 +62,9 @@ void GaggiMateController::setup() {
     albaComms->setTimeout_ms(200);
     albaComms->setDelay_us(20);
     albaComms->begin();
-    this->ledController = new LedController(albaComms);
-    this->distanceSensor = new DistanceSensor(albaComms, [this](int distance) { _comms.sendTofMeasurement(distance); });
+    albaBus = new SoftWireBus(albaComms);
+    this->ledController = new LedController(albaBus);
+    this->distanceSensor = new DistanceSensor(albaBus, [this](int distance) { _comms.sendTofMeasurement(distance); });
     if (this->ledController->isAvailable()) {
         _config.capabilites.ledControls = true;
         _config.capabilites.tof = true;
@@ -70,7 +81,8 @@ void GaggiMateController::setup() {
         capabilities.addons[0] = gaggimate_Addon_init_zero;
         capabilities.addons[0].type = 7;
     }
-    _comms.init("GPBLS", _config.name.c_str(), _version, capabilities);
+    // Steam switch held at power-on opens the BLE pairing window; read it here since steamBtn->setup() runs later.
+    _comms.init("GPBLS", _config.name.c_str(), _version, capabilities, isSteamSwitchOn());
 
     if (_config.capabilites.ledControls) {
         this->ledController->setup();
@@ -226,6 +238,10 @@ void GaggiMateController::loop() {
         handlePingTimeout();
     }
     sendSensorData();
+    if (_config.capabilites.ledControls && now - lastLedHealthCheck >= LED_HEALTH_CHECK_INTERVAL_MS) {
+        lastLedHealthCheck = now;
+        ledController->healthCheck();
+    }
     if (errorState != ERROR_CODE_NONE) {
         ESP_LOGW("GaggiMateController", "Error state: %d", errorState);
     }
@@ -330,6 +346,7 @@ void GaggiMateController::sendSensorData() {
         float puckFlow = 0.0f;
         float pumpFlow = 0.0f;
         float puckResistance = 0.0f;
+        float waterPumped = 0.0f;
         // Sensor + (optional) volumetric ride in one frame.
         gm::Payload batch[2];
         size_t n = 0;
@@ -338,12 +355,13 @@ void GaggiMateController::sendSensorData() {
             puckFlow = dimmedPump->getPuckFlow();
             pumpFlow = dimmedPump->getPumpFlow();
             puckResistance = dimmedPump->getPuckResistance();
+            waterPumped = dimmedPump->getPumpedWater();
             if (this->valve->getState()) {
                 batch[n++] = _comms.buildVolumetricMeasurement(dimmedPump->getCoffeeVolume());
             }
         }
         batch[n++] = _comms.buildSensorData(this->thermocouple->read(), this->pressureSensor->getPressure(), puckFlow, pumpFlow,
-                                            puckResistance, pumpPower, heaterPower);
+                                            puckResistance, pumpPower, heaterPower, waterPumped);
         _comms.sendUnreliableBatch(batch, n); // telemetry: fire-and-forget
     } else {
         _comms.sendSensorData(this->thermocouple->read(), 0.0f, 0.0f, 0.0f, 0.0f, pumpPower, heaterPower);

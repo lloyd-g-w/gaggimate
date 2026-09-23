@@ -3,7 +3,6 @@
 
 #include "ControllerOTA.h"
 #include <FS.h>
-#include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
 
 #include "semver.h"
@@ -13,6 +12,7 @@ constexpr uint8_t PHASE_DISPLAY_FW = 1;
 constexpr uint8_t PHASE_DISPLAY_FS = 2;
 constexpr uint8_t PHASE_CONTROLLER_FW = 3;
 constexpr uint8_t PHASE_FINISHED = 4;
+constexpr uint8_t PHASE_FAILED = 5;
 
 using phase_callback_t = std::function<void(uint8_t phase)>;
 using progress_callback_t = std::function<void(uint8_t phase, int progress)>;
@@ -26,19 +26,18 @@ class GitHubOTA {
               const String &firmware_name = "firmware.bin", const String &filesystem_name = "filesystem.bin",
               const String &controller_firmware_name = "controller.bin");
 
-    void init(NimBLEClient *client);
+    void init();
     void checkForUpdates();
     bool isUpdateAvailable(bool controller = false) const;
     String getCurrentVersion() const;
-    void update(bool controller = true, bool display = true);
+    void update(bool controller = true, bool display = true, NimBLEClient *client = nullptr);
     void setReleaseUrl(const String &release_url);
     void setControllerVersion(const String &controller_version);
     void setControllerUpdateFS(FS *fs);
 
   private:
-    HTTPUpdate Updater;
-
-    HTTPUpdateResult update_firmware(const String &url);
+    bool flashDisplayFirmware(const String &url);
+    void setPhase(uint8_t newPhase);
 
     uint8_t phase = PHASE_IDLE;
     semver_t _version;

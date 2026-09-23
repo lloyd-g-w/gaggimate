@@ -1,4 +1,5 @@
 #include "GaggiMateClient.h"
+#include <esp_log.h>
 
 GaggiMateClient::GaggiMateClient() : _endpoint(_transport) {}
 
@@ -14,11 +15,29 @@ void GaggiMateClient::init(const String &deviceName) {
     });
     _endpoint.begin();
     _transport.init(deviceName);
+
+    // One task owns the send pump, so BLE writes and retransmits never depend on the caller's thread or the main loop.
+    if (xTaskCreatePinnedToCore(pumpTask, "GaggiMateClient", PUMP_TASK_STACK, this, PUMP_TASK_PRIORITY, &_pumpTaskHandle, 0) == pdPASS) {
+        _endpoint.setPumpTask(_pumpTaskHandle);
+    } else {
+        _pumpTaskHandle = nullptr;
+        ESP_LOGE("GaggiMateClient", "Failed to create pump task; pumping from loop() instead");
+    }
+}
+
+void GaggiMateClient::pumpTask(void *arg) {
+    auto *self = static_cast<GaggiMateClient *>(arg);
+    for (;;) {
+        self->_endpoint.loop();
+        // Woken at once by a send or an ACK; the timeout only paces the retransmit check while idle.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(PUMP_IDLE_INTERVAL_MS));
+    }
 }
 
 void GaggiMateClient::loop() {
     _transport.maintain();
-    _endpoint.loop();
+    if (_pumpTaskHandle == nullptr)
+        _endpoint.loop();
 }
 
 gm::Payload GaggiMateClient::buildPing() {
@@ -177,12 +196,14 @@ void GaggiMateClient::registerHandlers() {
         // The display tracks a single boiler today; read boiler 0 if present.
         float temperature = 0.0f;
         float pressure = 0.0f;
+        float heater_power = 0.0f;
         if (p.content.sensor.boilers_count > 0) {
             temperature = p.content.sensor.boilers[0].temperature;
             pressure = p.content.sensor.boilers[0].pressure;
+            heater_power = p.content.sensor.boilers[0].power;
         }
         _sensorCb(temperature, pressure, p.content.sensor.puck_flow, p.content.sensor.pump_flow, p.content.sensor.puck_resistance,
-                  p.content.sensor.pump_power, p.content.sensor.heater_power);
+                  p.content.sensor.pump_power, heater_power, p.content.sensor.water_pumped);
     });
     _endpoint.on(gaggimate_Payload_button_tag, [this](const gm::Payload &p) {
         if (_buttonCb)

@@ -9,17 +9,17 @@
 #define BREW_MIN_DURATION_MS 5000
 #define BREW_MAX_DURATION_MS 300000
 #define BREW_SAFETY_DURATION_MS BREW_MAX_DURATION_MS
-// Momentary brew button: hold this long to start a flush-until-release
-// instead of the normal short-press brew action.
-#define BREW_HOLD_FLUSH_THRESHOLD_MS 1000
-// Safety cap: ends the hold-flush on its own if a release edge is lost.
-#define BREW_HOLD_FLUSH_MAX_DURATION_S 60
 #define BREW_MIN_VOLUMETRIC 5.0
+#define DEFAULT_FLUSH_DURATION_S 5
+#define MAX_FLUSH_DURATION_S 60
+#define FLUSH_HOLD_MAX_DURATION_S 60 // safety cap for hold-to-flush (flush duration 0)
+#define FLUSH_DRAIN_DURATION_S 1     // valve stays open this long after the flush pump stops
 #define BREW_MAX_VOLUMETRIC 250.0
 #define DEFAULT_STANDBY_TIMEOUT_MS 900000
 #define MIN_TEMP 0
 #define MAX_TEMP 160
 #define DEFAULT_TEMPERATURE_OFFSET 0
+#define DEFAULT_PRESSURE_OFFSET 0.0f
 #define DEFAULT_PRESSURE_SCALING 16.0f
 #define DEFAULT_PID "58.397,1.027,249.055,0.0"
 #define DEFAULT_PUMP_MODEL_COEFFS "10.205,5.521"

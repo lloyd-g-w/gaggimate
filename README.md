@@ -47,7 +47,6 @@ Additional documentation for the WebSocket API can be found in [docs/websocket-a
 - **Web flasher** — flash the controller, display (LilyGo T-RGB), headless or LilyGo T8-S3 with the latest nightly from your browser: [lloyd-g-w.github.io/gaggimate/flash](https://lloyd-g-w.github.io/gaggimate/flash/) (or run it locally, see [flasher/README.md](flasher/README.md)).
 - **LilyGo T8-S3 headless** build with SD-card storage (`display-headless-t8`).
 - **Rotate display 180°** — Settings → General → Display, for upside-down mounted screens.
-- **Hold brew button to flush** (momentary switches) — hold ≥ 1 s to flush until released; a short press brews as usual.
 - **Discord shot feedback** — rate shots with reactions, add grind/dose/bean/notes by replying (optionally parsed by an AI model): [docs/discord-shot-feedback.md](docs/discord-shot-feedback.md). Two modes: run it on the display, or offload it to the **Gaggibot** container ([gaggibot/](gaggibot/), a Portainer-friendly Docker Compose stack) so the ESP32 only uploads the shot and polls for the answers. The plugin card has a **Send test message** button that verifies the whole path without pulling a shot.
 
 
