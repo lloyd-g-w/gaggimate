@@ -5,7 +5,8 @@ import os
 Import("env")
 
 def get_firmware_specifier_build_flag():
-    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--exclude", "nightly", "--exclude", "db"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) #Uses any tags
+    # Only v* release tags count; nightly, db and one-off release tags (scripts/release.sh) must not leak into the version.
+    ret = subprocess.run(["git", "describe", "--tags", "--dirty", "--match", "v*"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     build_version = ret.stdout.strip()
     if not build_version:
         run_number = os.environ.get("GITHUB_RUN_NUMBER")

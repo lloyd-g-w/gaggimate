@@ -58,8 +58,10 @@ class Controller {
     int getMode() const;
 
     float getTargetTemp() const;
+    float getTargetSteamTemp() const;
     int getTargetGrindDuration() const;
     virtual float getCurrentTemp() const { return currentTemp; }
+    virtual float getCurrentSteamTemp() const { return currentSteamTemp; }
     bool isActive() const;
     bool isGrindActive() const;
     bool isBrewActive() const;
@@ -105,6 +107,8 @@ class Controller {
     void updateLastAction();
     void raiseTemp();
     void lowerTemp();
+    void raiseSteamTemp();
+    void lowerSteamTemp();
     void raiseBrewTarget();
     void lowerBrewTarget();
     void raiseGrindTarget();
@@ -155,7 +159,7 @@ class Controller {
     void setupStorage();
     void setupBluetooth();
     void onSystemInfo(const char *hardware, const char *version, uint32_t protocolVersion, bool dimming, bool pressure,
-                      bool ledControl, bool tof, std::vector<uint32_t> addons);
+                      bool ledControl, bool tof, bool dualBoiler, std::vector<uint32_t> addons);
     // Connected to a controller too old to speak the framed protocol: drive the
     // same path as a protocol-version mismatch (OTA recovery only). infoJson is
     // the legacy INFO characteristic contents (hardware/version/capabilities).
@@ -175,6 +179,10 @@ class Controller {
     void startProcessLocked(Process *process, std::vector<const char *> &events);
     void deactivateLocked(std::vector<const char *> &events);
     void afterDeactivate();
+    // Relax the BLE interval only once the stop command has been acknowledged (see afterDeactivate()).
+    bool relaxPending = false;
+    unsigned long relaxRequestedAt = 0;
+    static const unsigned long RELAX_TIMEOUT_MS = 1000;
     void clearLocked(std::vector<const char *> &events);
     void dispatchEvents(const std::vector<const char *> &events);
 
@@ -208,7 +216,8 @@ class Controller {
     WarningManager warnings;
 
     int mode = MODE_BREW;
-    float currentTemp = 0;
+    float currentTemp = 0.0f;
+    float currentSteamTemp = 0.0f;
     float pressure = 0.0f;
     float targetPressure = 0.0f;
     float currentPuckFlow = 0.0f;
@@ -227,8 +236,11 @@ class Controller {
     // transmits components that differ from these (the controller is stateful
     // and delivery is acknowledged). Cleared on (re)connect, a dropped frame and link settle.
     BoilerCommand lastBoiler{};
+    BoilerCommand lastBoiler2{};
     PumpCommand lastPump{};
     RelayCommand lastRelay{};
+    RelayCommand lastRefill{};
+    RelayCommand lastWater{};
     bool lastAlt = false;
     std::atomic<bool> controlStateSent{false};
     std::atomic<bool> stateResendPending{false}; // set from comms threads, serviced in loop()
@@ -274,8 +286,11 @@ class Controller {
     bool steamReady = false;
     bool steamSwitchOn = false;
     bool flushPending = false; // no flush since entering brew mode, waking up, or the last shot
+    bool waterValveActive = false;
+    bool waterButtonPressed = false;
     bool sdcard = false;
     FS *storageFs = nullptr;
+    bool steamBoilerLow = false;
     int error = 0;
 
     // Bluetooth scale connection monitoring

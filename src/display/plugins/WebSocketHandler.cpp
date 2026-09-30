@@ -398,6 +398,9 @@ void WebSocketHandler::publishTelemetry() {
     statusDoc.clear();
     statusDoc["tp"] = "evt:status";
     statusDoc["ct"] = round_to(controller->getCurrentTemp(), 3);
+    statusDoc["cst"] = round_to(controller->getCurrentSteamTemp(), 3);
+    statusDoc["tst"] = controller->getTargetSteamTemp();
+    statusDoc["db"] = controller->getSystemInfo().capabilities.dualBoiler;
     statusDoc["tt"] = controller->getTargetTemp();
     statusDoc["pr"] = round_to(controller->getCurrentPressure(), 3);
     statusDoc["fl"] = round_to(controller->getCurrentPumpFlow(), 3);
@@ -437,6 +440,7 @@ void WebSocketHandler::publishTelemetry() {
         statusDoc["pkr"] = round_to(controller->getCurrentPuckResistance(), 3);
         statusDoc["pf"] = round_to(controller->getCurrentPuckFlow(), 3);
         statusDoc["tf"] = controller->getTargetFlow();
+        statusDoc["wp"] = round_to(controller->getCurrentWaterPumped(), 3);
         if (process->getType() == MODE_BREW) {
             auto *brew = static_cast<BrewProcess *>(process);
             unsigned long ts = brew->isActive() && controller->isActive() ? millis() : brew->finished;
