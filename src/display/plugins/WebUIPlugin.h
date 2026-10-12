@@ -58,6 +58,7 @@ class WebUIPlugin : public Plugin {
     void handleBLEScaleScan(AsyncWebServerRequest *request);
     void handleBLEScaleConnect(AsyncWebServerRequest *request);
     void handleBLEScaleInfo(AsyncWebServerRequest *request);
+    void handleBLEScaleForget(AsyncWebServerRequest *request);
     void updateOTAStatus(const String &version);
     void updateOTAProgress(uint8_t phase, int progress);
 
@@ -67,6 +68,10 @@ class WebUIPlugin : public Plugin {
     // relay: POST asks the plugin to run a test, GET reports the last result.
     void handleDiscordTestStatus(AsyncWebServerRequest *request);
     void handleDiscordTestRequest(AsyncWebServerRequest *request);
+
+    // Profile images on the SD card (pre-converted 300x300 RGB565 from the web UI)
+    void handleProfileImage(AsyncWebServerRequest *request);
+    void handleProfileImageBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total);
 
     GitHubOTA *ota = nullptr;
     AsyncWebServer server;
@@ -81,6 +86,7 @@ class WebUIPlugin : public Plugin {
     bool updating = false;
     bool apMode = false;
     bool serverRunning = false;
+    bool pluginHooksRegistered = false;
     String updateComponent = "";
 
     // Last result of the plugin "Test" button, written from the Discord plugin's task and read from
@@ -88,6 +94,11 @@ class WebUIPlugin : public Plugin {
     std::mutex discordTestMutex;
     int discordTestState = 0; // 0 idle, 1 running, 2 ok, 3 failed
     String discordTestMessage;
+
+    // One upload at a time; a new upload takes over a stale one whose client went away.
+    AsyncWebServerRequest *imageUploadRequest = nullptr;
+    File imageUploadFile;
+    String imageUploadError;
 };
 
 #endif // WEBUIPLUGIN_H

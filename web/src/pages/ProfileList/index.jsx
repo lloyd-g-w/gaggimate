@@ -27,6 +27,7 @@ import { Spinner } from '../../components/Spinner.jsx';
 import Card from '../../components/Card.jsx';
 import { parseProfile } from './utils.js';
 import { downloadJson } from '../../utils/download.js';
+import { exportProfileImage, importProfileImage } from '../../utils/profileImage.js';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faStar } from '@fortawesome/free-solid-svg-icons/faStar';
 import { faPen } from '@fortawesome/free-solid-svg-icons/faPen';
@@ -45,6 +46,7 @@ import { faScaleBalanced } from '@fortawesome/free-solid-svg-icons/faScaleBalanc
 import { faSearch } from '@fortawesome/free-solid-svg-icons/faSearch';
 import { faAnglesDown, faAnglesUp, faGripVertical } from '@fortawesome/free-solid-svg-icons';
 import { buildStatisticsProfileHref } from '../Statistics/utils/statisticsRoute.js';
+import { isSystemProfile } from '../../utils/systemProfiles.js';
 
 Chart.register(
   LineController,
@@ -97,6 +99,7 @@ function ProfileCard({
 
   const bookmarkClass = data.favorite ? 'text-warning' : 'text-base-content/60';
   const typeText = data.type === 'pro' ? 'Pro' : 'Simple';
+  const isSystem = isSystemProfile(data.id);
   const typeClass = data.type === 'pro' ? 'badge badge-primary' : 'badge badge-neutral';
   const favoriteToggleDisabled = data.favorite ? unfavoriteDisabled : favoriteDisabled;
   const favoriteToggleClass = favoriteToggleDisabled ? 'opacity-50 cursor-not-allowed' : '';
@@ -106,10 +109,8 @@ function ProfileCard({
     else if (!data.favorite && !favoriteDisabled) onFavorite(data.id);
   }, [data.favorite, unfavoriteDisabled, favoriteDisabled, onUnfavorite, onFavorite, data.id]);
 
-  const onDownload = useCallback(() => {
-    const download = {
-      ...data,
-    };
+  const onDownload = useCallback(async () => {
+    const download = await withExportedImage(data);
     delete download.id;
     delete download.selected;
     delete download.favorite;
@@ -234,6 +235,14 @@ function ProfileCard({
                 >
                   {typeText}
                 </span>
+                {isSystem && (
+                  <span
+                    className='badge badge-outline badge-sm lg:badge-md font-medium'
+                    title='Built-in profile, can be edited but not deleted'
+                  >
+                    System
+                  </span>
+                )}
                 <button
                   onClick={onToggleDetails}
                   className='btn btn-xs btn-ghost self-start'
@@ -349,27 +358,29 @@ function ProfileCard({
                             <span>Duplicate</span>
                           </button>
                         </li>
-                        <li role='none'>
-                          <button
-                            role='menuitem'
-                            onClick={() => {
-                              confirmOrDelete(() => {
-                                onDelete(data.id);
-                                closeMenu();
-                              });
-                            }}
-                            className={`justify-start ${confirmDelete ? 'bg-error text-error-content rounded font-semibold' : 'text-error'}`}
-                            aria-label={
-                              confirmDelete
-                                ? `Confirm deletion of ${data.label} profile`
-                                : `Delete ${data.label} profile`
-                            }
-                            title={confirmDelete ? 'Click to confirm delete' : 'Delete profile'}
-                          >
-                            <FontAwesomeIcon icon={faTrashCan} />
-                            <span>{confirmDelete ? 'Confirm' : 'Delete'}</span>
-                          </button>
-                        </li>
+                        {!isSystem && (
+                          <li role='none'>
+                            <button
+                              role='menuitem'
+                              onClick={() => {
+                                confirmOrDelete(() => {
+                                  onDelete(data.id);
+                                  closeMenu();
+                                });
+                              }}
+                              className={`justify-start ${confirmDelete ? 'bg-error text-error-content rounded font-semibold' : 'text-error'}`}
+                              aria-label={
+                                confirmDelete
+                                  ? `Confirm deletion of ${data.label} profile`
+                                  : `Delete ${data.label} profile`
+                              }
+                              title={confirmDelete ? 'Click to confirm delete' : 'Delete profile'}
+                            >
+                              <FontAwesomeIcon icon={faTrashCan} />
+                              <span>{confirmDelete ? 'Confirm' : 'Delete'}</span>
+                            </button>
+                          </li>
+                        )}
                       </ul>
                     </div>
                   )}
@@ -432,22 +443,24 @@ function ProfileCard({
                       <FontAwesomeIcon icon={faCopy} />
                     </button>
                   </Tooltip>
-                  <Tooltip content={confirmDelete ? 'Click to confirm' : 'Delete profile'}>
-                    <button
-                      onClick={() => {
-                        confirmOrDelete(() => onDelete(data.id));
-                      }}
-                      className={`btn btn-sm btn-ghost ${confirmDelete ? 'bg-error text-error-content' : 'text-error'}`}
-                      aria-label={
-                        confirmDelete
-                          ? `Confirm deletion of ${data.label} profile`
-                          : `Delete ${data.label} profile`
-                      }
-                    >
-                      <FontAwesomeIcon icon={faTrashCan} />
-                      {confirmDelete && <span className='ml-2 font-semibold'>Confirm</span>}
-                    </button>
-                  </Tooltip>
+                  {!isSystem && (
+                    <Tooltip content={confirmDelete ? 'Click to confirm' : 'Delete profile'}>
+                      <button
+                        onClick={() => {
+                          confirmOrDelete(() => onDelete(data.id));
+                        }}
+                        className={`btn btn-sm btn-ghost ${confirmDelete ? 'bg-error text-error-content' : 'text-error'}`}
+                        aria-label={
+                          confirmDelete
+                            ? `Confirm deletion of ${data.label} profile`
+                            : `Delete ${data.label} profile`
+                        }
+                      >
+                        <FontAwesomeIcon icon={faTrashCan} />
+                        {confirmDelete && <span className='ml-2 font-semibold'>Confirm</span>}
+                      </button>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             </div>
@@ -579,6 +592,17 @@ function SimpleStep(props) {
       </div>
     </div>
   );
+}
+
+// Profile images only exist with an SD card; without one the export carries no "image" field.
+async function withExportedImage(profile) {
+  const copy = { ...profile };
+  delete copy.image;
+  if (machine.value.capabilities.sdCard) {
+    const image = await exportProfileImage(profile.id).catch(() => null);
+    if (image) copy.image = image;
+  }
+  return copy;
 }
 
 export function ProfileList() {
@@ -873,16 +897,15 @@ export function ProfileList() {
     [apiService, profiles, setLoading],
   );
 
-  const onExport = useCallback(() => {
-    const exportedProfiles = profiles.map(p => {
-      const ep = {
-        ...p,
-      };
+  const onExport = useCallback(async () => {
+    const exportedProfiles = [];
+    for (const p of profiles) {
+      const ep = await withExportedImage(p);
       delete ep.id;
       delete ep.selected;
       delete ep.favorite;
-      return ep;
-    });
+      exportedProfiles.push(ep);
+    }
 
     downloadJson(exportedProfiles, 'profiles.json');
   }, [profiles]);
@@ -897,8 +920,12 @@ export function ProfileList() {
           setLoading(true);
           try {
             const profiles = parseProfile(result);
-            for (const p of profiles) {
-              await apiService.request({ tp: 'req:profiles:save', profile: p });
+            for (const { image, ...p } of profiles) {
+              const response = await apiService.request({ tp: 'req:profiles:save', profile: p });
+              const id = response?.profile?.id;
+              if (image && id && machine.value.capabilities.sdCard) {
+                await importProfileImage(id, image).catch(() => {});
+              }
             }
           } catch {
             // Individual save errors are surfaced by WS timeout; continue to reload list.
@@ -913,7 +940,7 @@ export function ProfileList() {
   const onClear = useCallback(async () => {
     setLoading(true);
     for (const p of profiles) {
-      if (!p.selected) {
+      if (!p.selected && !isSystemProfile(p.id)) {
         await apiService.request({ tp: 'req:profiles:delete', id: p.id });
       }
     }

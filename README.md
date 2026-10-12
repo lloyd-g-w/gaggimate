@@ -9,7 +9,6 @@
 [![Sonar Tech Debt][sonar-tech-debt]][sonar-url]
 
 
-
 </p>
 
 This project upgrades a Gaggia espresso machine with smart controls to improve your coffee-making experience. By adding a display and custom electronics, you can monitor and control the machine more easily.
@@ -50,6 +49,9 @@ Additional documentation for the WebSocket API can be found in [docs/websocket-a
 - **Rotate display 180°** — Settings → General → Display, for upside-down mounted screens.
 - **Discord shot feedback** — rate shots with reactions, add grind/dose/bean/notes by replying (optionally parsed by an AI model): [docs/discord-shot-feedback.md](docs/discord-shot-feedback.md). Two modes: run it on the display, or offload it to the **Gaggibot** container ([gaggibot/](gaggibot/), a Portainer-friendly Docker Compose stack) so the ESP32 only uploads the shot and polls for the answers. The plugin card has a **Send test message** button that verifies the whole path without pulling a shot.
 
+## Hardware Files
+
+The hardware files were moved to [gaggimate/parts](https://github.com/gaggimate/parts).
 
 ## License
 
