@@ -308,6 +308,18 @@ class Controller {
 
     // Bluetooth scale connection monitoring
     VolumetricMeasurementSource currentVolumetricSource = VolumetricMeasurementSource::INACTIVE;
+    // Scales tare asynchronously, so the first readings of a brew can still carry the pre-tare weight
+    // (cup on the scale, drift since boot/wake) and trip the volumetric target instantly. Until a
+    // near-zero reading confirms the tare, physical readings are withheld from the process; if the tare
+    // never lands, the weight at the timeout becomes a software offset. Guarded by processMutex.
+    bool awaitingScaleTare = false;
+    unsigned long scaleTareRequestedAt = 0;
+    double scaleSoftwareTareOffset = 0.0;
+    double scalePreTareReading = 0.0;
+    bool scalePreTareReadingValid = false;
+    static constexpr double SCALE_TARE_SETTLED_GRAMS = 1.0;
+    static constexpr double SCALE_TARE_DROP_GRAMS = 5.0; // a late tare can land after coffee started dripping
+    static const unsigned long SCALE_TARE_TIMEOUT_MS = 3000;
     std::atomic<unsigned long> lastBluetoothMeasurement{0};
     std::atomic<unsigned long> lastHardwareMeasurement{0};
 #ifdef NIGHTLY_BUILD

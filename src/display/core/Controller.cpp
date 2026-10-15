@@ -1221,6 +1221,11 @@ void Controller::activate(bool ignoreWarnings) {
         {
             std::lock_guard<std::recursive_mutex> guard(processMutex);
             currentVolumetricSource = source;
+            awaitingScaleTare =
+                source == VolumetricMeasurementSource::HARDWARE || source == VolumetricMeasurementSource::BLUETOOTH;
+            scaleTareRequestedAt = millis();
+            scaleSoftwareTareOffset = 0.0;
+            scalePreTareReadingValid = false;
         }
         if (mode == MODE_BREW) {
             pluginManager->trigger("controller:brew:prestart");
@@ -1513,6 +1518,28 @@ void Controller::onVolumetricMeasurement(double measurement, VolumetricMeasureme
     if (currentVolumetricSource != source) {
         ESP_LOGD(LOG_TAG, "Ignoring volumetric measurement, source does not match");
         return;
+    }
+    if (source == VolumetricMeasurementSource::HARDWARE || source == VolumetricMeasurementSource::BLUETOOTH) {
+        if (awaitingScaleTare) {
+            if (std::fabs(measurement) <= SCALE_TARE_SETTLED_GRAMS ||
+                (scalePreTareReadingValid && measurement <= scalePreTareReading - SCALE_TARE_DROP_GRAMS)) {
+                awaitingScaleTare = false; // tare landed
+            } else if (millis() - scaleTareRequestedAt >= SCALE_TARE_TIMEOUT_MS) {
+                awaitingScaleTare = false;
+                // The first withheld reading predates any coffee in the cup, so it is the better offset.
+                scaleSoftwareTareOffset = scalePreTareReadingValid ? scalePreTareReading : measurement;
+                ESP_LOGW(LOG_TAG, "Scale did not tare within %lu ms; using a software offset of %.1f g", SCALE_TARE_TIMEOUT_MS,
+                         scaleSoftwareTareOffset);
+            } else {
+                if (!scalePreTareReadingValid) {
+                    scalePreTareReading = measurement;
+                    scalePreTareReadingValid = true;
+                }
+                ESP_LOGD(LOG_TAG, "Ignoring pre-tare scale reading %.1f g", measurement);
+                return;
+            }
+        }
+        effectiveMeasurement -= scaleSoftwareTareOffset;
     }
     if (currentProcess != nullptr) {
         currentProcess->updateVolume(effectiveMeasurement);
