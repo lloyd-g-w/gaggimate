@@ -1,5 +1,5 @@
 {
-  "name": "GaggiMate Display (LilyGo T-RGB)",
+  "name": "GaggiMate Display (LilyGo T-RGB / Waveshare / AMOLED)",
   "version": "nightly",
   "new_install_prompt_erase": true,
   "builds": [
