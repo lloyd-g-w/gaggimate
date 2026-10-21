@@ -66,7 +66,7 @@ ASSET_LAYOUT = {
 
 TARGET_NAMES = {
     "controller": "GaggiMate Controller",
-    "display": "GaggiMate Display (LilyGo T-RGB)",
+    "display": "GaggiMate Display (LilyGo T-RGB / Waveshare / AMOLED)",
     "headless": "GaggiMate Headless (T-RGB class board)",
     "headless-t8": "GaggiMate Headless (LilyGo T8-S3, fork)",
 }

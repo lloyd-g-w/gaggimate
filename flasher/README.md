@@ -65,7 +65,7 @@ want to depend on GitHub Pages being enabled.
 | Card | Hardware | Notes |
 | --- | --- | --- |
 | Controller | GaggiMate controller board | Pump/valve/sensor firmware. |
-| Display — LilyGo T-RGB | Standard GaggiMate touchscreen | Includes the embedded web UI filesystem image. |
+| Display — LilyGo T-RGB / Waveshare / AMOLED | Standard GaggiMate touchscreen (panel auto-detected at boot) | Includes the embedded web UI filesystem image. |
 | Headless | T-RGB class board, no screen | Includes the web UI filesystem image; access the UI over Wi-Fi. |
 | Headless — LilyGo T8-S3 (fork) | T8-S3 headless build from this fork | Uses an SD card instead of a filesystem partition; no filesystem image is flashed. |
 
