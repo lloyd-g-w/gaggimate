@@ -391,7 +391,10 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setWifiApPassword(request->arg("apPassword"));
             if (request->hasArg("homekit"))
                 settings->setHomekit(parseBoolArg(request->arg("homekit")));
-            if (request->hasArg("displayRotated"))
+            // displayRotation (degrees) supersedes the legacy 180-degree displayRotated flag.
+            if (request->hasArg("displayRotation"))
+                settings->setDisplayRotation(request->arg("displayRotation").toInt());
+            else if (request->hasArg("displayRotated"))
                 settings->setDisplayRotated(parseBoolArg(request->arg("displayRotated")));
             if (request->hasArg("boilerFillActive"))
                 settings->setBoilerFillActive(parseBoolArg(request->arg("boilerFillActive")));
@@ -590,6 +593,7 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["targetWaterTemp"] = settings.getTargetWaterTemp();
     doc["homekit"] = settings.isHomekit();
     doc["displayRotated"] = settings.isDisplayRotated();
+    doc["displayRotation"] = settings.getDisplayRotation();
     doc["homeAssistant"] = settings.isHomeAssistant();
     doc["haUser"] = settings.getHomeAssistantUser();
     doc["haPassword"] = settings.getHomeAssistantPassword();

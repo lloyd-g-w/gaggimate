@@ -107,7 +107,12 @@ class Settings {
     String getWifiApPassword() const { return wifiApPassword.get(); }
     String getMdnsName() const { return mdnsName.get(); }
     bool isHomekit() const { return homekit.get(); }
-    bool isDisplayRotated() const { return displayRotated.get(); }
+    bool isDisplayRotated() const { return getDisplayRotation() != 0; }
+    // Clockwise UI rotation in degrees (0-359). Falls back to the legacy 180-degree flag until set.
+    int getDisplayRotation() const {
+        const int degrees = displayRotation.get();
+        return degrees < 0 ? (displayRotated.get() ? 180 : 0) : degrees % 360;
+    }
     bool isVolumetricTarget() const { return volumetricTarget.get(); }
     String getOTAChannel() const { return otaChannel.get(); }
     String getSavedScale() const { return savedScale.get(); }
@@ -234,6 +239,7 @@ class Settings {
     void setMdnsName(const String &mdnsName);
     void setHomekit(bool homekit);
     void setDisplayRotated(bool display_rotated);
+    void setDisplayRotation(int degrees);
     void setVolumetricTarget(bool volumetric_target);
     void setOTAChannel(const String &otaChannel);
     void setSavedScale(const String &savedScale);
@@ -358,7 +364,8 @@ class Settings {
     Property<String> savedScale{registry, "ssc", ""};
     Property<String> savedScaleName{registry, "sscn", ""}; // advertised BLE name, shown while the scale is out of range
     Property<bool> homekit{registry, "hk", false};
-    Property<bool> displayRotated{registry, "dspR", false};
+    Property<bool> displayRotated{registry, "dspR", false}; // legacy 180-degree flag, kept in sync for downgrades
+    Property<int> displayRotation{registry, "dspRot", -1};  // -1 = unset, use displayRotated
     Property<bool> volumetricTarget{registry, "vt", false};
     Property<bool> boilerFillActive{registry, "bf_a", false};
     Property<int> startupFillTime{registry, "bf_su", 5000};

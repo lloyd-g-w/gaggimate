@@ -368,6 +368,7 @@ void DefaultUI::loop() {
     if (rerender) {
         rerender = false;
         lastRender = now;
+        applyDisplayRotation(); // picks up web UI changes live
         applyTheme();
         if (controller->isErrorState()) {
             changeScreen(SCREEN_ID_STANDBY_SCREEN);
@@ -532,20 +533,21 @@ void DefaultUI::onVolumetricDelete() {
     profileDirty = true;
 }
 
+void DefaultUI::applyDisplayRotation() {
+    const int degrees = controller->getSettings().getDisplayRotation();
+    if (degrees == appliedRotation)
+        return;
+#ifndef GAGGIMATE_SIM // rotation lives in the device flush path (LV_Helper)
+    if (!lvglHelperSetRotation(degrees))
+        printf("[DefaultUI] Could not rotate the display to %d degrees (out of memory)\n", degrees);
+#endif
+    appliedRotation = degrees; // also on failure, so a failed allocation isn't retried every frame
+}
+
 void DefaultUI::setupPanel() {
-    // Apply the persisted 180-degree rotation before ui_init() creates any
-    // screens, so even the first rendered frame is oriented correctly.
-    // LVGL 8 mirrors touch input automatically once driver->rotated is set;
-    // sw_rotate doubles as the capability flag (it stays 0 for direct-mode
-    // panels and for the desktop sim, where software rotation is unsupported).
-    lv_disp_t *defaultDisp = lv_disp_get_default();
-    if (defaultDisp != nullptr && controller->getSettings().isDisplayRotated()) {
-        if (defaultDisp->driver->sw_rotate) {
-            lv_disp_set_rotation(defaultDisp, LV_DISP_ROT_180);
-        } else {
-            printf("[DefaultUI] 180 degree rotation is not supported on this display driver\n");
-        }
-    }
+    // Apply the persisted rotation before ui_init() creates any screens, so
+    // even the first rendered frame is oriented correctly.
+    applyDisplayRotation();
 
     ui_init();
     gaugeSetpointsInside = controller->areGaugeSetpointsInside();

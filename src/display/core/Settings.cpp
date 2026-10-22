@@ -159,7 +159,15 @@ void Settings::setMdnsName(const String &mdnsName) { this->mdnsName.set(mdnsName
 
 void Settings::setHomekit(const bool homekit) { this->homekit.set(homekit); }
 
-void Settings::setDisplayRotated(const bool display_rotated) { this->displayRotated.set(display_rotated); }
+void Settings::setDisplayRotated(const bool display_rotated) { setDisplayRotation(display_rotated ? 180 : 0); }
+
+void Settings::setDisplayRotation(int degrees) {
+    degrees %= 360;
+    if (degrees < 0)
+        degrees += 360;
+    displayRotation.set(degrees);
+    displayRotated.set(degrees == 180);
+}
 
 void Settings::setVolumetricTarget(bool volumetric_target) { volumetricTarget.set(volumetric_target); }
 

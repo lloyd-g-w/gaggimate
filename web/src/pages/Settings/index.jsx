@@ -61,7 +61,6 @@ import { isApp } from '../../app/platform.js';
 
 const CHECKBOX_KEYS = [
   'homekit',
-  'displayRotated', // fork: rotate display 180°
   'boilerFillActive',
   'smartGrindActive',
   'mahlkonigActive',
@@ -348,6 +347,11 @@ export function Settings() {
       }
       if (key === 'dashboardLayout') {
         setDashboardLayout(value);
+      }
+      if (key === 'displayRotation') {
+        // Keep the legacy flag in step for firmware that only knows 180-degree flips.
+        setFormData({ ...formData, displayRotation: value, displayRotated: Number(value) === 180 });
+        return;
       }
       setFormData({
         ...formData,

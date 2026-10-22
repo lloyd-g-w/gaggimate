@@ -124,6 +124,8 @@ export function GeneralTab({
   // Snap legacy free-form values onto the 5 s steps the slider offers.
   const { t } = useLingui();
   const flushDuration = Math.min(20, Math.round(Number(formData.flushDuration ?? 5) / 5) * 5);
+  // Firmware older than arbitrary rotation only reports the 180-degree flag.
+  const displayRotation = formData.displayRotation ?? (formData.displayRotated ? 180 : 0);
   return (
     <div className='space-y-4 sm:space-y-6 lg:grid lg:grid-cols-2 lg:gap-4'>
       {/* User Preferences */}
@@ -182,14 +184,46 @@ export function GeneralTab({
         <div className='border-base-content/5 mt-6 border-t pt-6'>
           <h3 className='text-md text-base-content mb-2 font-semibold'>Display</h3>
           <p className='text-base-content/85 mb-4 text-sm opacity-70'>
-            For upside-down mounted displays. Takes effect after restart.
+            Rotates the screen clockwise to match how the display is mounted. Applied a moment after
+            saving, no restart needed.
           </p>
-          <ToggleField
-            label='Rotate Display 180°'
-            htmlFor='displayRotated'
-            checked={!!formData.displayRotated}
-            onChange={onChange('displayRotated')}
+          <InputGroupField label='Rotation' htmlFor='displayRotation' unit='°' noMargin>
+            <input
+              id='displayRotation'
+              name='displayRotation'
+              type='number'
+              min='0'
+              max='359'
+              step='1'
+              placeholder='0'
+              value={displayRotation}
+              onChange={onChange('displayRotation')}
+            />
+          </InputGroupField>
+          <input
+            type='range'
+            className='range range-sm mt-3 w-full'
+            min='0'
+            max='359'
+            step='1'
+            aria-label='Rotation'
+            value={displayRotation}
+            onInput={onChange('displayRotation')}
           />
+          <div className='mt-2 flex flex-wrap gap-2'>
+            {[0, 90, 180, 270].map(deg => (
+              <button
+                key={deg}
+                type='button'
+                className={`btn btn-xs ${Number(displayRotation) === deg ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() =>
+                  onChange('displayRotation')({ currentTarget: { value: String(deg) } })
+                }
+              >
+                {deg}°
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Predictive Scale Delay */}

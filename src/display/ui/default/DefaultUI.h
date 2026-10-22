@@ -83,6 +83,7 @@ class DefaultUI {
 
   private:
     void setupPanel();
+    void applyDisplayRotation();
     void setupState();
 
     void handleScreenChange();
@@ -97,6 +98,7 @@ class DefaultUI {
     bool tickChartMode = false; // chart mode the ring ticks currently reflect
     uint8_t gaugeCount = 0;
     bool gaugeSetpointsInside = false;
+    int appliedRotation = 0; // degrees currently applied to the panel
     void positionMenuIcon(lv_obj_t *obj, int angle, int radius);
 
     void updateState();

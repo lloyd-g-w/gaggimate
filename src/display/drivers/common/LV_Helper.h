@@ -13,5 +13,8 @@
 
 void enable_amoled_black_theme_override(lv_disp_t *disp);
 void beginLvglHelper(Display &board, bool debug = false);
+// Rotate the whole UI clockwise by any angle (0-359). Call from the LVGL task.
+// Returns false if the rotation buffers couldn't be allocated.
+bool lvglHelperSetRotation(int degrees);
 String lvgl_helper_get_fs_filename(String filename);
 const char *lvgl_helper_get_fs_filename(const char *filename);
