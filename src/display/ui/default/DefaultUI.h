@@ -48,6 +48,8 @@ class DefaultUI {
 
     // Interface methods
     void changeScreen(ScreensEnum screen);
+    void onWelcomeContinue();
+    ScreensEnum getCurrentScreen() const { return currentScreen; }
 
     void changeBrewScreenMode(BrewScreenState state);
     void onProfileSwitch();
@@ -70,6 +72,7 @@ class DefaultUI {
         brewConfirmVisible = visible;
         rerender = true;
     }
+    bool isBrewConfirmVisible() const { return brewConfirmVisible; }
 
     void markDirty() { rerender = true; }
     void markProfileDirty() { profileDirty = true; }
@@ -87,6 +90,8 @@ class DefaultUI {
     void setupState();
 
     void handleScreenChange();
+    void updateAccessQrCode(lv_obj_t *qrcode);
+    static ScreensEnum screenForMode(int mode);
 
     // Animate the dial meters' tick length (short on profile/menu/info and chart-mode status, long elsewhere).
     void animateGaugeTicks(bool fromShort, bool toShort);
@@ -102,7 +107,7 @@ class DefaultUI {
     void positionMenuIcon(lv_obj_t *obj, int angle, int radius);
 
     void updateState();
-    bool isProShot();
+    bool isChartShot();
     void updateSystemStatus();
     void updateWarnings();
     void updateProfileInfo();
@@ -143,6 +148,9 @@ class DefaultUI {
     float shotTempMax = 0.0f;
     unsigned long lastShotSample = 0;
     unsigned long shotChartStarted = 0;
+    float shotMaxPressure = 0.0f; // brew-end stats shown in the chart legend
+    float shotFlowSum = 0.0f;
+    uint16_t shotFlowSamples = 0;
 
     // Profile preview: SD card image and pro profile chart on the new profile screen
     void updateProfilePreview();
@@ -194,6 +202,7 @@ class DefaultUI {
     int waitingForController = false;
     int dualBoiler = false;
     int initialized = false;
+    bool welcomeActive = false; // first-run welcome screen, shown until setup is done or skipped
     int grindAvailable = false;
 
     // Seasonal flags

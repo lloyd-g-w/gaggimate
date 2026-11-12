@@ -23,7 +23,9 @@
 #include <display/plugins/BoilerFillPlugin.h>
 #include <display/plugins/CleaningSchedulePlugin.h>
 #include <display/plugins/LedControlPlugin.h>
+#include <display/plugins/SetupWizardPlugin.h>
 #include <display/plugins/ShotHistoryPlugin.h>
+#include <display/plugins/SmartDosePlugin.h>
 #include <display/plugins/SmartGrindPlugin.h>
 #include <display/plugins/WebUIPlugin.h>
 #include <display/plugins/mahlkonig/MahlkonigPlugin.h>
@@ -133,9 +135,13 @@ void Controller::setup() {
 #ifndef GAGGIMATE_SIM
     pluginManager->registerPlugin(&BLEScales);
 #endif
+    if (settings.isSmartDoseActive()) {
+        pluginManager->registerPlugin(&SmartDose);
+    }
     pluginManager->registerPlugin(new LedControlPlugin());
     pluginManager->registerPlugin(new AutoWakeupPlugin());
     pluginManager->registerPlugin(new CleaningSchedulePlugin());
+    pluginManager->registerPlugin(new SetupWizardPlugin());
     pluginManager->setup(this);
 
     pluginManager->on("profiles:profile:save", [this](Event const &event) {
@@ -189,7 +195,7 @@ void Controller::seedSDCard() {
     if (marker)
         marker.close();
     bool ok = true;
-    for (const char *dir : {"/p", "/h"}) {
+    for (const char *dir : {"/p", "/h", "/m"}) {
         if (LittleFS.exists(dir))
             ok = fs_util::copyTree(LittleFS, *storageFs, dir) && ok;
     }
@@ -335,6 +341,11 @@ void Controller::setupBluetooth() {
     comms.init("GPBLC");
     comms.onSendFailed([this]() { requestStateResend(); });
     comms.onConnectionChanged([this](bool connected) {
+        if (!connected)
+            hardwareSessionReady = false;
+        tankLevelKnown = false;
+        tofLevelKnown = false;
+        steamLevelKnown = false;
         controlStateSent = false;
         settleResendAt = 0;
         if (connected) {
@@ -360,6 +371,8 @@ void Controller::setupBluetooth() {
     });
     pluginManager->on("ota:update:end", [this](Event const &) { applyConnectionPriority(true); });
     pluginManager->on("history:shot:recorded", [this](Event const &) { comms.tare(); });
+    pluginManager->on("controller:brew:prestart", [this](Event const &) { comms.tareHardwareScale(); });
+    pluginManager->on("controller:grind:start", [this](Event const &) { comms.tareHardwareScale(); });
     comms.onSensorData([this](float temp, float temp2, float pressure, float puckFlow, float pumpFlow, float puckResistance,
                               float pumpPower, float heaterPower, float waterPumped) {
         onTempRead(temp);
@@ -376,10 +389,23 @@ void Controller::setupBluetooth() {
         pluginManager->trigger("pump:puck-resistance:change", "value", puckResistance);
         pluginManager->trigger("pump:volume:change", "value", waterPumped);
     });
+    comms.onMachineHardware([this](uint32_t hash, bool ready, bool error) {
+        const bool wasReady = isMachineHardwareReady();
+        appliedHardwareHash = hash;
+        hardwareSessionReady = ready;
+        hardwareConfigurationError = error;
+        if (!wasReady && isMachineHardwareReady() && !error)
+            requestStateResend();
+    });
+    comms.onTankLevel([this](bool present, bool full) {
+        tankLevelPresent = present;
+        tankLevelOK = full;
+        tankLevelKnown = present;
+    });
+    comms.onSteamLevel([this](bool low) { onSteamLevelRead(low); });
     comms.onButtonState([this](uint8_t index, bool pressed) {
         if (index == 3) {
-            ESP_LOGI("Controller", "Boiler water level changed: %d", pressed);
-            steamBoilerLow = pressed;
+            onSteamLevelRead(pressed);
             return;
         }
         ESP_LOGV(LOG_TAG, "Button %d changed to %d", index, pressed);
@@ -440,7 +466,13 @@ void Controller::setupBluetooth() {
         }
     });
     comms.onTofMeasurement([this](uint32_t value) {
+        if (value >= 0xFFFF) {
+            tofLevelKnown = false;
+            return;
+        }
         tofDistance = static_cast<int>(value);
+        lastTofReading = millis();
+        tofLevelKnown = true;
         ESP_LOGV(LOG_TAG, "Received new TOF distance: %d", tofDistance);
         pluginManager->trigger("controller:tof:change", "value", tofDistance);
     });
@@ -472,6 +504,7 @@ void Controller::onSystemInfo(const char *hardware, const char *version, uint32_
         pluginManager->trigger("controller:protocol:mismatch", "value", static_cast<int>(protocolVersion));
     } else {
         setPressureScale();
+        setMachineHardware();
         setScaleFactors();
         setHeaterSettings();
         setPumpModelCoeffs();
@@ -560,7 +593,8 @@ void Controller::setupWifi() {
                          info.wifi_sta_authmode_change.new_mode);
             },
             WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE);
-
+        WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+        WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
         WiFi.begin(settings.getWifiSsid(), settings.getWifiPassword());
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
         for (int attempts = 0; attempts < WIFI_CONNECT_ATTEMPTS; attempts++) {
@@ -591,7 +625,9 @@ void Controller::setupWifi() {
         const String apPassword = settings.getWifiApPassword();
         // WPA2 requires >= 8 chars; fall back to an open AP if somehow shorter.
         const bool secured = apPassword.length() >= WIFI_AP_PASSWORD_MIN_LENGTH;
-        WiFi.mode(WIFI_AP);
+        // APSTA keeps an idle station for setup-wizard network scans; it never connects until the next boot
+        WiFi.setAutoReconnect(false);
+        WiFi.mode(WIFI_AP_STA);
         WiFi.softAPConfig(WIFI_AP_IP, WIFI_AP_IP, WIFI_SUBNET_MASK);
         WiFi.softAP(WIFI_AP_SSID, secured ? apPassword.c_str() : nullptr);
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
@@ -655,6 +691,9 @@ void Controller::loop() {
     // and a spurious ACK then stops the reliable layer retrying. Re-send until it lands.
     if (comms.isConnected() && now < configResendUntil && (now - lastConfigResend) >= CONFIG_RESEND_INTERVAL_MS) {
         setPressureScale();
+        // Retry the hardware handshake too: until accepted, the controller
+        // deliberately ignores boiler commands. Matching ready settings are skipped.
+        setMachineHardware();
         setHeaterSettings();
         setPumpModelCoeffs();
         lastConfigResend = now;
@@ -708,7 +747,7 @@ void Controller::loopLogic() {
         if (currentProcess != nullptr) {
             updateLastAction();
             if (currentProcess->getType() == MODE_BREW) {
-                auto brewProcess = static_cast<BrewProcess *>(currentProcess);
+                auto brewProcess = static_cast<BrewProcess *>(currentProcess.get());
                 brewProcess->updatePressure(pressure);
                 brewProcess->updateFlow(currentPumpFlow);
                 brewProcess->updateWaterPumped(currentWaterPumped);
@@ -727,12 +766,12 @@ void Controller::loopLogic() {
         if (lastProcess != nullptr && lastProcess->isComplete() && !processCompleted && settings.isDelayAdjust()) {
             processCompleted = true;
             if (lastProcess->getType() == MODE_BREW) {
-                if (auto *brewProcess = static_cast<BrewProcess *>(lastProcess);
+                if (auto *brewProcess = static_cast<BrewProcess *>(lastProcess.get());
                     brewProcess->target == ProcessTarget::VOLUMETRIC) {
                     newBrewDelay = brewProcess->getNewDelayTime();
                 }
             } else if (lastProcess->getType() == MODE_GRIND) {
-                if (auto *grindProcess = static_cast<GrindProcess *>(lastProcess);
+                if (auto *grindProcess = static_cast<GrindProcess *>(lastProcess.get());
                     grindProcess->target == ProcessTarget::VOLUMETRIC) {
                     newGrindDelay = grindProcess->getNewDelayTime();
                 }
@@ -780,7 +819,7 @@ bool Controller::isUpdating() const { return updating; }
 
 bool Controller::isAutotuning() const { return autotuning; }
 
-bool Controller::isReady() const { return !isUpdating() && !isErrorState() && !isAutotuning(); }
+bool Controller::isReady() const { return !isUpdating() && !isErrorState() && !isAutotuning() && isMachineHardwareReady(); }
 
 const char *systemStateKey(SystemState state) {
     static const char *const KEYS[] = {"starting", "waiting", "ready", "updating", "autotuning", "mismatch", "error"};
@@ -842,22 +881,25 @@ void Controller::autotune(int testTime, int samples, int heaterWattage) {
 }
 
 void Controller::startProcess(Process *process) {
+    std::unique_ptr<Process> owned(process);
+    if (!isMachineHardwareReady()) {
+        return;
+    }
     std::vector<const char *> events;
     {
         std::lock_guard<std::recursive_mutex> guard(processMutex);
-        startProcessLocked(process, events);
+        startProcessLocked(std::move(owned), events);
     }
     updateControl(); // queue the pump/valve command now instead of on the next logic cycle
     dispatchEvents(events);
 }
 
-void Controller::startProcessLocked(Process *process, std::vector<const char *> &events) {
+void Controller::startProcessLocked(std::unique_ptr<Process> process, std::vector<const char *> &events) {
     if (isActiveLocked() || !isReady()) {
-        delete process;
         return;
     }
     processCompleted = false;
-    this->currentProcess = process;
+    this->currentProcess = std::move(process);
     applyConnectionPriority(); // shot started -> tight BLE interval
     events.push_back("controller:process:start");
     updateLastAction();
@@ -889,7 +931,7 @@ float Controller::getTargetTemp() const {
     case MODE_BREW:
     case MODE_GRIND: {
         std::lock_guard<std::recursive_mutex> guard(processMutex);
-        Process *proc = currentProcess;
+        Process *proc = currentProcess.get();
         if (proc != nullptr && proc->isActive() && proc->getType() == MODE_BREW) {
             auto brewProcess = static_cast<BrewProcess *>(proc);
             return brewProcess->getTemperature();
@@ -904,7 +946,9 @@ float Controller::getTargetTemp() const {
 }
 
 float Controller::getTargetSteamTemp() const {
-    if (mode != MODE_STANDBY) {
+    if (brewHeaterTestActive)
+        return 0.0f;
+    if (mode != MODE_STANDBY && (!systemInfo.capabilities.dualBoiler || isSteamHeaterActive())) {
         return settings.getTargetSteamTemp();
     }
     return 0.0f;
@@ -932,6 +976,16 @@ void Controller::setPressureScale(void) {
     if (systemInfo.capabilities.pressure) {
         comms.sendPressureScale(settings.getPressureScaling());
     }
+}
+
+void Controller::setMachineHardware() {
+    if (!systemInfo.capabilities.dualBoiler || systemInfo.protocolMismatch)
+        return;
+    auto value = settings.getMachineHardware();
+    if (hardwareSessionReady && !hardwareConfigurationError && appliedHardwareHash == machineHardwareHash(value))
+        return;
+    value.restart_if_required = true;
+    comms.sendMachineHardware(value);
 }
 
 void Controller::setScaleFactors() {
@@ -975,8 +1029,10 @@ void Controller::setPumpModelCoeffs(void) {
 void Controller::setHeaterSettings() {
     float pid[4];
     parseFloatCsv(settings.getPid(), pid, 4, 0.0f);
+    float steamPid[3];
+    parseFloatCsv(settings.getSteamPid(), steamPid, 3, 0.0f);
     comms.sendHeaterSettings(pid[0], pid[1], pid[2], pid[3], settings.isHeaterCoordinationEnabled(),
-                             static_cast<uint32_t>(settings.getHeaterHandoverMs()));
+                             static_cast<uint32_t>(settings.getHeaterHandoverMs()), steamPid[0], steamPid[1], steamPid[2]);
 }
 
 int Controller::getTargetGrindDuration() const { return settings.getTargetGrindDuration(); }
@@ -1009,12 +1065,14 @@ void Controller::raiseSteamTemp() {
     float temp = getTargetSteamTemp();
     temp = constrain(temp + 1.0f, MIN_TEMP, MAX_TEMP);
     settings.setTargetSteamTemp(static_cast<int>(temp));
+    pluginManager->trigger("boiler:targetSteamTemperature:change", "value", temp);
 }
 
 void Controller::lowerSteamTemp() {
     float temp = getTargetSteamTemp();
     temp = constrain(temp - 1.0f, MIN_TEMP, MAX_TEMP);
     settings.setTargetSteamTemp(static_cast<int>(temp));
+    pluginManager->trigger("boiler:targetSteamTemperature:change", "value", temp);
 }
 
 void Controller::raiseBrewTarget() {
@@ -1078,7 +1136,7 @@ void Controller::updateControl() {
     // can delete the process mid-computation (GM-147). comms sends are queued
     // (pumped from comms.loop()), so no cross-task blocking happens under the lock.
     std::lock_guard<std::recursive_mutex> guard(processMutex);
-    Process *proc = currentProcess;
+    Process *proc = currentProcess.get();
     bool active = isActiveLocked();
 
     float targetTemp = getTargetTemp();
@@ -1137,7 +1195,7 @@ void Controller::updateControl() {
     // stateful and every message is acknowledged, so re-sending unchanged values
     // each cycle is unnecessary; a periodic ping (see loop()) keeps the watchdog
     // fed when nothing changes. controlStateSent is cleared to force a full resend.
-    gm::Payload batch[8];
+    auto &batch = controlBatch;
     size_t count = 0;
     const bool full = !controlStateSent.exchange(true); // claim the flag first so a concurrent reset is never lost
     if (full || boiler != lastBoiler)
@@ -1157,7 +1215,16 @@ void Controller::updateControl() {
         // the dedicated valve must not start the brew pump or create a PumpProcess.
         water.open = waterValveActive;
 
-        if (!active && mode != MODE_STANDBY && steamBoilerLow) {
+        const int steamRefillMode = settings.getSteamRefillMode();
+        const bool steamLevelEnabled = settings.getSteamLevelEnabled();
+        const uint32_t steamRefillPostClearMs = settings.getSteamRefillPostClearSeconds() * 1000u;
+        if (steamRefillPostClear && millis() - steamRefillClearedAt >= steamRefillPostClearMs)
+            steamRefillPostClear = false;
+        if (steamRefillMode == 2) {
+            refill.open = mode != MODE_STANDBY && steamLevelEnabled && isSteamRefillTankLevelOK() &&
+                          (steamBoilerLow || steamRefillPostClear);
+        } else if (steamRefillMode == 1 && steamLevelEnabled && !active && mode != MODE_STANDBY &&
+                   (steamBoilerLow || steamRefillPostClear) && isSteamRefillTankLevelOK()) {
             targetPressure = 0.0f;
             targetFlow = 0.0f;
             relay.open = false;
@@ -1208,6 +1275,10 @@ void Controller::activate(bool ignoreWarnings) {
     // previously its Start action ran against a half-initialized BLE session.
     if (isActive() || !loaded || !comms.isConnected() || !isReady())
         return;
+    if (mode == MODE_BREW && profileManager->getSelectedProfile().phases.empty()) {
+        ESP_LOGW(LOG_TAG, "Brew requested but profile id %s has no phases", profileManager->getSelectedProfile().id.c_str());
+        return;
+    }
     // An error-level warning turns the start into a confirmation request; the UIs answer with activate(true).
     if (mode == MODE_BREW && !ignoreWarnings && warnings.hasError()) {
         pluginManager->trigger("controller:brew:confirm");
@@ -1279,7 +1350,7 @@ void Controller::afterDeactivate() {
     {
         std::lock_guard<std::recursive_mutex> guard(processMutex);
         shot = lastProcess != nullptr && lastProcess->getType() == MODE_BREW &&
-               !static_cast<BrewProcess *>(lastProcess)->isUtility();
+               !static_cast<BrewProcess *>(lastProcess.get())->isUtility();
     }
     if (!shot)
         comms.tare(); // shots tare on history:shot:recorded, once their final weight is written
@@ -1291,12 +1362,10 @@ void Controller::deactivateLocked(std::vector<const char *> &events) {
     if (currentProcess == nullptr) {
         return;
     }
-    delete lastProcess;
-    lastProcess = currentProcess;
-    currentProcess = nullptr;
+    lastProcess = std::move(currentProcess);
     bool utility = false;
     if (lastProcess->getType() == MODE_BREW) {
-        utility = static_cast<BrewProcess *>(lastProcess)->isUtility();
+        utility = static_cast<BrewProcess *>(lastProcess.get())->isUtility();
         if (!utility)
             flushPending = true; // a shot leaves grounds behind, a flush does not
         events.push_back("controller:brew:end");
@@ -1323,8 +1392,7 @@ void Controller::clearLocked(std::vector<const char *> &events) {
     if (lastProcess != nullptr && lastProcess->getType() == MODE_BREW) {
         events.push_back("controller:brew:clear");
     }
-    delete lastProcess;
-    lastProcess = nullptr;
+    lastProcess.reset();
     currentVolumetricSource = VolumetricMeasurementSource::INACTIVE;
 #ifdef NIGHTLY_BUILD
     latestFlowEstimation = 0.0;
@@ -1388,6 +1456,8 @@ bool Controller::isBrewActive() const {
 int Controller::getMode() const { return mode; }
 
 void Controller::setMode(int newMode) {
+    if (systemInfo.capabilities.dualBoiler && (newMode == MODE_STEAM || newMode == MODE_WATER))
+        newMode = MODE_BREW;
     if (newMode == MODE_STANDBY) {
         waterValveActive = false;
         waterButtonPressed = false;
@@ -1395,6 +1465,16 @@ void Controller::setMode(int newMode) {
     Event modeEvent = pluginManager->trigger("controller:mode:change", "value", newMode);
     const int previousMode = mode;
     mode = modeEvent.getInt("value");
+    if (systemInfo.capabilities.dualBoiler) {
+        if (mode == MODE_STANDBY) {
+            if (previousMode != MODE_STANDBY && settings.getDefaultSteamMode() == 2)
+                settings.setPersistentSteamState(steamHeaterActive);
+            steamHeaterActive = false;
+        } else if (previousMode == MODE_STANDBY && mode == MODE_BREW) {
+            const int steamMode = settings.getDefaultSteamMode();
+            steamHeaterActive = steamMode == 1 || (steamMode == 2 && settings.getPersistentSteamState());
+        }
+    }
     if (mode == MODE_BREW && previousMode != MODE_BREW)
         flushPending = true; // entering brew mode, including wake-up from standby
     steamReady = false;
@@ -1640,22 +1720,23 @@ bool Controller::isHardwareScaleHealthy() const {
 }
 
 void Controller::onFlush() {
+    if (!isMachineHardwareReady())
+        return;
     // Allocate outside the lock; reachable from the UI, AsyncTCP and BLE tasks (GM-147).
     const int duration = settings.getFlushDuration();
     Profile profile = FLUSH_PROFILE;
     profile.temperature = profileManager->getSelectedProfile().temperature;
     profile.phases[0].duration = duration > 0 ? duration : FLUSH_HOLD_MAX_DURATION_S; // 0 = hold, capped
-    auto *flush = new BrewProcess(profile, ProcessTarget::TIME, settings.getBrewDelay());
+    auto flush = std::make_unique<BrewProcess>(profile, ProcessTarget::TIME, settings.getBrewDelay());
     flush->holdPhase = duration == 0; // pump phase ends on onFlushRelease(), the drain phase still runs
     std::vector<const char *> events;
     {
         std::lock_guard<std::recursive_mutex> guard(processMutex);
         if (isActiveLocked()) {
-            delete flush;
             return;
         }
         clearLocked(events);
-        startProcessLocked(flush, events);
+        startProcessLocked(std::move(flush), events);
         flushPending = false;
         events.push_back("controller:brew:start");
     }
@@ -1667,7 +1748,7 @@ void Controller::onFlush() {
 void Controller::onFlushRelease() {
     std::lock_guard<std::recursive_mutex> guard(processMutex);
     if (currentProcess != nullptr && currentProcess->getType() == MODE_BREW) {
-        static_cast<BrewProcess *>(currentProcess)->release();
+        static_cast<BrewProcess *>(currentProcess.get())->release();
     }
 }
 
@@ -1715,9 +1796,11 @@ void Controller::onButtonEvent(uint8_t index, ButtonHandler::Event event) {
     case Event::LONG_PRESS_END:
         handleFlushButton(false);
         break;
-    case Event::CLICK_END: // momentary release only matters for a hold-to-flush
+    case Event::CLICK_END:
         if (behavior == "flush")
             onFlushRelease();
+        else if (behavior == "water" && systemInfo.capabilities.dualBoiler)
+            handleWaterButton(false);
         break;
     }
 }
@@ -1755,6 +1838,14 @@ void Controller::handleBrewButton(bool pressed) {
         break;
     case MODE_BREW:
         if (!isActive()) {
+#ifndef GAGGIMATE_HEADLESS
+            // Match the warning screen's Ignore action: a second momentary brew
+            // switch activation confirms the brew with activate(true).
+            if (settings.isMomentaryButtons() && ui != nullptr && ui->isBrewConfirmVisible()) {
+                activate(true);
+                break;
+            }
+#endif
             activate();
         } else if (settings.isMomentaryButtons()) { // second press stops the shot
             deactivate();
@@ -1774,6 +1865,11 @@ void Controller::handleBrewButton(bool pressed) {
 }
 
 void Controller::handleSteamButton(bool pressed) {
+    if (systemInfo.capabilities.dualBoiler) {
+        if (pressed)
+            toggleSteamHeater();
+        return;
+    }
     if (pressed) {
         if (getMode() != MODE_STEAM) {
             setMode(MODE_STEAM);
@@ -1861,8 +1957,7 @@ void Controller::handleProfileButton(bool pressed, const String &id) {
         return;
     }
     std::vector<String> profileIds = profileManager->listProfiles();
-    if (std::find(profileIds.begin(), profileIds.end(), id) != profileIds.end()) {
-        profileManager->selectProfile(id);
+    if (std::find(profileIds.begin(), profileIds.end(), id) != profileIds.end() && profileManager->selectProfile(id)) {
         activate();
     }
 }
@@ -1880,4 +1975,33 @@ void Controller::loopLogicTask(void *arg) {
         controller->loopLogic();
         xTaskDelayUntil(&lastWake, pdMS_TO_TICKS(controller->getMode() == MODE_STANDBY ? 1000 : PROGRESS_INTERVAL));
     }
+}
+
+void Controller::onSteamLevelRead(bool low) {
+    if (!steamLevelKnown.load() || steamBoilerLow != low)
+        ESP_LOGI("Controller", "Boiler water level: %s", low ? "low" : "OK");
+    if (steamBoilerLow && !low) {
+        steamRefillClearedAt = millis();
+        steamRefillPostClear = true;
+    }
+    if (low)
+        steamRefillPostClear = false;
+    steamBoilerLow = low;
+    steamLevelKnown = true;
+}
+
+void Controller::toggleSteamHeater() {
+    if (!isSteamControlsAvailable() || !systemInfo.capabilities.dualBoiler || mode == MODE_STANDBY)
+        return;
+    steamHeaterActive = !steamHeaterActive;
+    if (settings.getDefaultSteamMode() == 2)
+        settings.setPersistentSteamState(steamHeaterActive);
+    pluginManager->trigger(steamHeaterActive ? "boiler:steamHeater:activate" : "boiler:steamHeater:deactivate");
+}
+
+void Controller::toggleWaterValve() {
+    if (!systemInfo.capabilities.dualBoiler || mode == MODE_STANDBY)
+        return;
+    handleWaterButton(true);
+    handleWaterButton(false);
 }
